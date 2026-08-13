@@ -53,5 +53,5 @@ jobs:
         with:
           name: PartyPing
           path: |
-            bin/Release/**
+            bin/x64/Release/**
           if-no-files-found: error
