@@ -44,7 +44,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var role = Config.RequiredRole;
-        if (ImGui.BeginCombo("Preferred role label", role.DisplayName()))
+        if (ImGui.BeginCombo("Required open role", role.DisplayName()))
         {
             foreach (var candidate in Enum.GetValues<RoleFilter>())
             {
@@ -61,7 +61,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
             ImGui.EndCombo();
         }
-        ImGui.TextDisabled("XIVPF HTML does not reliably expose structured open-role data, so this is shown as unverified in alerts.");
+        ImGui.TextDisabled("PartyPing reads XIVPF's accepted job codes for each open slot. Alerts are removed when this role is no longer open.");
 
         var slots = Config.MinimumOpenSlots;
         if (ImGui.InputInt("Minimum open slots", ref slots))
@@ -93,8 +93,8 @@ public sealed class ConfigWindow : Window, IDisposable
             Config.Save();
         }
 
-        ImGui.TextWrapped("Party Finder alerts now come from XIVPF.com only. PartyPing no longer listens for local in-game Party Finder listing refreshes.");
-        ImGui.TextWrapped("Each XIVPF alert is tracked by its Discord message ID. When that listing becomes full or disappears from XIVPF, PartyPing removes that specific Discord post automatically.");
+        ImGui.TextWrapped("Party Finder alerts come from XIVPF.com only. PartyPing does not listen for local in-game Party Finder listing refreshes.");
+        ImGui.TextWrapped("Each XIVPF alert is tracked by its Discord message ID. PartyPing removes that specific Discord post when the listing fills, disappears, or your selected role is no longer open.");
         ImGui.TextWrapped("FFXIV/Dalamud must still be running because PartyPing runs inside the game client.");
         ImGui.TextDisabled(plugin.XivPfStatus);
 
