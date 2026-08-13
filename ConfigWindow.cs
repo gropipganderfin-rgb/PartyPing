@@ -14,7 +14,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public ConfigWindow(Plugin plugin) : base("PartyPing###PartyPingConfig")
     {
         this.plugin = plugin;
-        Size = new Vector2(680, 760);
+        Size = new Vector2(680, 820);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -63,7 +63,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
             ImGui.EndCombo();
         }
-        ImGui.TextDisabled("PartyPing reads XIVPF's accepted job codes for each open slot. Alerts are removed when this role is no longer open.");
+        ImGui.TextDisabled("PartyPing reads accepted job codes for open slots. Alerts are removed when this role is no longer open.");
 
         var slots = Config.MinimumOpenSlots;
         if (ImGui.InputInt("Minimum open slots", ref slots))
@@ -95,10 +95,25 @@ public sealed class ConfigWindow : Window, IDisposable
             Config.Save();
         }
 
-        ImGui.TextWrapped("Party Finder alerts come from XIVPF.com only. PartyPing does not listen for local in-game Party Finder listing refreshes.");
-        ImGui.TextWrapped("Each XIVPF alert is tracked by its Discord message ID. PartyPing removes that specific Discord post when the listing fills, disappears, or your selected role is no longer open.");
+        ImGui.TextWrapped("Background Party Finder monitoring comes from XIVPF.com. Use the manual local check below whenever you want a fresher result directly from FFXIV.");
+        ImGui.TextWrapped("Each PF alert is tracked by its Discord message ID. PartyPing edits or removes the post as the listing changes.");
         ImGui.TextWrapped("FFXIV/Dalamud must still be running because PartyPing runs inside the game client.");
         ImGui.TextDisabled(plugin.XivPfStatus);
+
+        DrawSectionHeader("Local Party Finder check");
+
+        if (plugin.LocalPfCheckInProgress)
+            ImGui.BeginDisabled();
+
+        if (ImGui.Button("Check local PF now"))
+            _ = plugin.CheckLocalPfNowAsync();
+
+        if (plugin.LocalPfCheckInProgress)
+            ImGui.EndDisabled();
+
+        ImGui.TextWrapped("User-triggered only. Requests the High-End Duty Party Finder category directly from FFXIV without opening the Party Finder window.");
+        ImGui.TextWrapped("The local result uses the same duty/keyword/open-slot filters and exact local job-slot data for your selected role. Matching Discord posts are created or updated; locally invalid or closed listings are removed when the scan can prove it safely.");
+        ImGui.TextDisabled(plugin.LocalPfStatus);
 
         DrawSectionHeader("My party tracker");
 
@@ -143,7 +158,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.Spacing();
         DrawSectionHeader("Important");
-        ImGui.TextWrapped("XIVPF is crowdsourced, so listings can appear, update, fill, or disappear with some delay compared with the in-game Party Finder.");
+        ImGui.TextWrapped("XIVPF is crowdsourced, so it can lag behind the in-game Party Finder. The local check is fresher but is manual by design and currently requests High-End Duty only.");
     }
 
     private async Task ClearDiscordMessagesAsync()
