@@ -8,7 +8,7 @@ using PartyPing.Windows;
 
 namespace PartyPing;
 
-public sealed class Plugin : IDalamudPlugin
+public sealed partial class Plugin : IDalamudPlugin
 {
     private const string CommandName = "/partyping";
 
