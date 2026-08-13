@@ -137,7 +137,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (clearInProgress)
             ImGui.EndDisabled();
 
-        ImGui.TextDisabled("Deletes messages created and tracked by PartyPing. It does not touch other users' or bots' messages.");
+        ImGui.TextDisabled("Deletes tracked PartyPing posts, then matching XIVPF listings repopulate on the next poll.");
         if (!string.IsNullOrWhiteSpace(clearStatus))
             ImGui.TextWrapped(clearStatus);
 
@@ -157,9 +157,16 @@ public sealed class ConfigWindow : Window, IDisposable
         try
         {
             var result = await DiscordClearer.ClearAsync(Config, CancellationToken.None).ConfigureAwait(false);
-            clearStatus = result.Failed == 0
-                ? $"Cleared {result.Removed} PartyPing Discord message(s)."
-                : $"Cleared {result.Removed} message(s); {result.Failed} could not be removed.";
+
+            if (result.Failed == 0)
+            {
+                plugin.ResetXivPfAlertStateAfterManualClear();
+                clearStatus = $"Cleared {result.Removed} PartyPing Discord message(s). Matching XIVPF listings will repopulate on the next poll.";
+            }
+            else
+            {
+                clearStatus = $"Cleared {result.Removed} message(s); {result.Failed} could not be removed. Repopulation is paused to avoid duplicate posts; press Clear again to retry.";
+            }
         }
         catch (Exception ex)
         {
