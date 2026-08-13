@@ -64,7 +64,7 @@ public sealed class Plugin : IDalamudPlugin
 
     internal async Task SendTestAsync()
     {
-        await SendSmsAsync("PartyPing test: SMS alerts are working.").ConfigureAwait(false);
+        await SendSmsAsync("PartyPing test: Discord notifications are working.").ConfigureAwait(false);
     }
 
     private void OnReceiveListing(IPartyFinderListing listing, IPartyFinderListingEventArgs args)
@@ -135,7 +135,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         try
         {
-            LastStatus = "Sending SMS...";
+            LastStatus = "Sending Discord notification...";
             var status = await smsSender.SendAsync(Configuration, message, cancellation.Token).ConfigureAwait(false);
             LastStatus = status + " at " + DateTime.Now.ToString("t");
             Log.Information("{Status}", LastStatus);
@@ -145,8 +145,8 @@ public sealed class Plugin : IDalamudPlugin
         }
         catch (Exception ex)
         {
-            LastStatus = "SMS failed: " + ex.Message;
-            Log.Error(ex, "PartyPing SMS send failed");
+            LastStatus = "Discord notification failed: " + ex.Message;
+            Log.Error(ex, "PartyPing Discord notification failed");
         }
     }
 
