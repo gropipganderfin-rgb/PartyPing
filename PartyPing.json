@@ -2,12 +2,13 @@
   "Author": "PartyPing",
   "Name": "PartyPing",
   "Punchline": "Discord alerts when Party Finder hits my prog point.",
-  "Description": "Watches Party Finder listings received by the game, filters by duty, prog keywords, and required open role, then sends a Discord notification. Use /partyping to configure it.",
+  "Description": "Monitors in-game Party Finder and xivpf.com in the background, filters by duty, prog keywords, open slots, and in-game role availability, then sends Discord notifications. Use /partyping to configure it.",
   "ApplicableVersion": "any",
   "Tags": [
     "party finder",
     "ultimate",
     "notification",
-    "discord"
+    "discord",
+    "xivpf"
   ]
 }
