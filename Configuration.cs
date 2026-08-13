@@ -5,7 +5,7 @@ namespace PartyPing;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
 
     public bool Enabled { get; set; } = false;
     public ushort DutyId { get; set; } = 0;
@@ -17,10 +17,7 @@ public sealed class Configuration : IPluginConfiguration
     public RoleFilter RequiredRole { get; set; } = RoleFilter.AnyRole;
     public int PerListingCooldownMinutes { get; set; } = 180;
 
-    public string TwilioAccountSid { get; set; } = string.Empty;
-    public string TwilioAuthToken { get; set; } = string.Empty;
-    public string TwilioFromNumber { get; set; } = string.Empty;
-    public string ToNumber { get; set; } = string.Empty;
+    public string DiscordWebhookUrl { get; set; } = string.Empty;
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }
