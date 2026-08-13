@@ -19,6 +19,17 @@ internal sealed class SmsSender : IDisposable
         return result;
     }
 
+    public async Task<string> EditAsync(
+        Configuration config,
+        string messageId,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        EnsureDiscordUrl(config);
+        var message = body.Replace("SMS alerts", "Discord notifications", StringComparison.OrdinalIgnoreCase);
+        return await discord.EditAsync(config, messageId, message, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<string> DeleteAsync(Configuration config, string messageId, CancellationToken cancellationToken)
     {
         EnsureDiscordUrl(config);
