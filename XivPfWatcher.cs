@@ -15,6 +15,21 @@ internal sealed record XivPfListing(
 
 internal sealed class XivPfWatcher : IDisposable
 {
+    private static readonly HashSet<string> NorthAmericanWorlds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Aether
+        "Adamantoise", "Cactuar", "Faerie", "Gilgamesh", "Jenova", "Midgardsormr", "Sargatanas", "Siren",
+
+        // Crystal
+        "Balmung", "Brynhildr", "Coeurl", "Diabolos", "Goblin", "Malboro", "Mateus", "Zalera",
+
+        // Dynamis
+        "Cuchulainn", "Golem", "Halicarnassus", "Kraken", "Maduin", "Marilith", "Rafflesia", "Seraph",
+
+        // Primal
+        "Behemoth", "Excalibur", "Exodus", "Famfrit", "Hyperion", "Lamia", "Leviathan", "Ultros",
+    };
+
     private static readonly Regex ScriptStyleRegex = new(
         @"<(script|style)\b[^>]*>.*?</\1>",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
@@ -100,6 +115,11 @@ internal sealed class XivPfWatcher : IDisposable
                 if (at >= 0 && at + 3 < recruiter.Length)
                     world = recruiter[(at + 3)..].Trim();
             }
+
+            // XIVPF background monitoring is NA-only.
+            // Reject unknown/unrecognized worlds so non-NA listings cannot slip through.
+            if (!NorthAmericanWorlds.Contains(world))
+                continue;
 
             var duty = lines[i];
             var fingerprint = $"{duty}\u001f{description}\u001f{recruiter}\u001f{world}";
