@@ -64,7 +64,11 @@ public sealed class Plugin : IDalamudPlugin
 
     internal async Task SendTestAsync()
     {
-        await SendSmsAsync("PartyPing test: Discord notifications are working.").ConfigureAwait(false);
+        await SendSmsAsync(
+            "# PartyPing Test\n" +
+            "**Discord notifications are working.**\n\n" +
+            "Your matching Party Finder listings will appear here."
+        ).ConfigureAwait(false);
     }
 
     private void OnReceiveListing(IPartyFinderListing listing, IPartyFinderListingEventArgs args)
@@ -117,10 +121,17 @@ public sealed class Plugin : IDalamudPlugin
 
             notifiedListings[listing.Id] = now;
 
-            var totalSlots = listing.SlotsAvailable;
-            var filled = listing.SlotsFilled;
-            var world = listing.CurrentWorld.ToString() ?? "Unknown";
-            var message = BuildMessage(dutyName, filled, totalSlots, world, config.RequiredRole, description);
+            var recruitingSlots = listing.SlotsAvailable;
+            var filledSlots = listing.SlotsFilled;
+            var world = GetWorldName(listing);
+            var message = BuildMessage(
+                dutyName,
+                filledSlots,
+                recruitingSlots,
+                openSlots,
+                world,
+                config.RequiredRole,
+                description);
 
             _ = SendSmsAsync(message);
         }
@@ -170,6 +181,18 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private static string GetWorldName(IPartyFinderListing listing)
+    {
+        try
+        {
+            return listing.CurrentWorld.Value.Name.ToString();
+        }
+        catch
+        {
+            return "Unknown";
+        }
+    }
+
     private void CleanupOldListings()
     {
         var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
@@ -186,15 +209,32 @@ public sealed class Plugin : IDalamudPlugin
         return listing.Slots.Any(slot => slot.Accepting.Any(job => role.Matches(job)));
     }
 
-    private static string BuildMessage(string duty, int filled, int total, string world, RoleFilter role, string description)
+    private static string BuildMessage(
+        string duty,
+        int filledSlots,
+        int recruitingSlots,
+        int openSlots,
+        string world,
+        RoleFilter role,
+        string description)
     {
         var cleaned = string.Join(' ', description.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        var roleText = role == RoleFilter.AnyRole ? string.Empty : $" | {role.DisplayName()} slot";
-        var prefix = $"FFXIV PF: {duty} | {filled}/{total} | {world}{roleText} | ";
-        const int targetLength = 150;
-        var room = Math.Max(10, targetLength - prefix.Length);
-        if (cleaned.Length > room)
-            cleaned = cleaned[..Math.Max(0, room - 3)] + "...";
-        return prefix + cleaned;
+        if (cleaned.Length > 1200)
+            cleaned = cleaned[..1197] + "...";
+
+        var roleText = role == RoleFilter.AnyRole ? "Any role" : role.DisplayName();
+        var recruitingText = recruitingSlots > 0
+            ? $"{filledSlots}/{recruitingSlots} filled"
+            : "Not specified";
+
+        return
+            "# PartyPing Match\n" +
+            $"## {duty}\n" +
+            $"**Recruiting slots:** {recruitingText}\n" +
+            $"**Open slots:** {openSlots}\n" +
+            $"**Role match:** {roleText}\n" +
+            $"**World:** {world}\n\n" +
+            "### Party Finder Description\n" +
+            $"> {cleaned}";
     }
 }
