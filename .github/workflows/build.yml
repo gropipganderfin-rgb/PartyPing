@@ -42,10 +42,9 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $project = [xml](Get-Content .\PartyPing.csproj -Raw)
-          $version = [string]$project.Project.PropertyGroup.Version
+          $version = (Get-Content .\version.txt -Raw).Trim()
           if ([string]::IsNullOrWhiteSpace($version)) {
-            throw "PartyPing.csproj does not define a Version."
+            throw "version.txt does not define a version."
           }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
