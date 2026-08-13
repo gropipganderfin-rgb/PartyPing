@@ -21,7 +21,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public override void Draw()
     {
         var enabled = Config.Enabled;
-        if (ImGui.Checkbox("Enable SMS alerts", ref enabled))
+        if (ImGui.Checkbox("Enable Discord alerts", ref enabled))
         {
             Config.Enabled = enabled;
             Config.Save();
@@ -82,13 +82,11 @@ public sealed class ConfigWindow : Window, IDisposable
             Config.Save();
         }
 
-        DrawSectionHeader("Twilio SMS");
-        EditString("Account SID", Config.TwilioAccountSid, v => Config.TwilioAccountSid = v, 128);
-        EditSecret("Auth Token", Config.TwilioAuthToken, v => Config.TwilioAuthToken = v, 256);
-        EditString("Twilio From (+1...)", Config.TwilioFromNumber, v => Config.TwilioFromNumber = v, 32);
-        EditString("Text me at (+1...)", Config.ToNumber, v => Config.ToNumber = v, 32);
+        DrawSectionHeader("Discord notifications");
+        EditString("Discord URL", Config.TwilioAccountSid, v => Config.TwilioAccountSid = v, 512);
+        ImGui.TextDisabled("Paste the Discord incoming notification URL for the channel that should receive PartyPing alerts.");
 
-        if (ImGui.Button("Send test SMS"))
+        if (ImGui.Button("Send test Discord notification"))
             _ = plugin.SendTestAsync();
 
         ImGui.SameLine();
@@ -97,7 +95,6 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
         DrawSectionHeader("Important");
         ImGui.TextWrapped("PartyPing reacts to Party Finder listings that your game client receives. It does not automatically refresh Party Finder or scrape xivpf.com. Keep FFXIV running and ensure PF listings are being fetched/refreshed for alerts to fire.");
-        ImGui.TextWrapped("Your Twilio token is stored in Dalamud's plugin configuration. Do not share that configuration file.");
     }
 
     private static void DrawSectionHeader(string text)
@@ -111,16 +108,6 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         var value = current;
         if (ImGui.InputText(label, ref value, maxLength))
-        {
-            setter(value);
-            Config.Save();
-        }
-    }
-
-    private void EditSecret(string label, string current, Action<string> setter, int maxLength)
-    {
-        var value = current;
-        if (ImGui.InputText(label, ref value, maxLength, ImGuiInputTextFlags.Password))
         {
             setter(value);
             Config.Save();
