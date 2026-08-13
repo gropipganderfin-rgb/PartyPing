@@ -89,6 +89,14 @@ public sealed partial class Plugin : IDalamudPlugin
         ).ConfigureAwait(false);
     }
 
+    internal void ResetXivPfAlertStateAfterManualClear()
+    {
+        activeXivPfAlerts.Clear();
+        notifiedXivPfListings.Clear();
+        XivPfStatus = "XIVPF: cleared - matching listings will repopulate on the next poll";
+        Log.Information("PartyPing manual clear reset XIVPF alert and cooldown state");
+    }
+
     private void OnFrameworkUpdate(IFramework framework)
     {
         var now = DateTime.UtcNow;
