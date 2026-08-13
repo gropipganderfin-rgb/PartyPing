@@ -1,13 +1,13 @@
 {
   "Author": "PartyPing",
   "Name": "PartyPing",
-  "Punchline": "Text me when Party Finder hits my prog point.",
-  "Description": "Watches Party Finder listings received by the game, filters by duty, prog keywords, and required open role, then sends an SMS through Twilio. Use /partyping to configure it.",
+  "Punchline": "Discord alerts when Party Finder hits my prog point.",
+  "Description": "Watches Party Finder listings received by the game, filters by duty, prog keywords, and required open role, then sends a Discord notification. Use /partyping to configure it.",
   "ApplicableVersion": "any",
   "Tags": [
     "party finder",
     "ultimate",
     "notification",
-    "sms"
+    "discord"
   ]
 }
