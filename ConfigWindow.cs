@@ -12,7 +12,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public ConfigWindow(Plugin plugin) : base("PartyPing###PartyPingConfig")
     {
         this.plugin = plugin;
-        Size = new Vector2(620, 650);
+        Size = new Vector2(680, 760);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -37,8 +37,10 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         EditString("Duty name contains", Config.DutyNameContains, v => Config.DutyNameContains = v, 128);
+        ImGui.TextDisabled("Duty name is also used by XIVPF background monitoring.");
+
         EditString("Include keywords", Config.IncludeKeywords, v => Config.IncludeKeywords = v, 512);
-        ImGui.TextDisabled("Separate keywords with commas. Example: p5, sigma, omega");
+        ImGui.TextDisabled("Separate keywords with commas. Example: p3, bh, enrage");
         EditString("Exclude keywords", Config.ExcludeKeywords, v => Config.ExcludeKeywords = v, 512);
 
         var all = Config.RequireAllIncludeKeywords;
@@ -66,12 +68,12 @@ public sealed class ConfigWindow : Window, IDisposable
 
             ImGui.EndCombo();
         }
-        ImGui.TextDisabled("Alert only if a recruiting PF slot accepts at least one job in this role.");
+        ImGui.TextDisabled("Structured role filtering is exact for listings received in-game.");
 
         var slots = Config.MinimumOpenSlots;
         if (ImGui.InputInt("Minimum open slots", ref slots))
         {
-            Config.MinimumOpenSlots = Math.Clamp(slots, 0, 8);
+            Config.MinimumOpenSlots = Math.Clamp(slots, 0, 24);
             Config.Save();
         }
 
@@ -82,9 +84,36 @@ public sealed class ConfigWindow : Window, IDisposable
             Config.Save();
         }
 
+        DrawSectionHeader("XIVPF background monitoring");
+
+        var xivPfEnabled = Config.XivPfPollingEnabled;
+        if (ImGui.Checkbox("Monitor xivpf.com automatically", ref xivPfEnabled))
+        {
+            Config.XivPfPollingEnabled = xivPfEnabled;
+            Config.Save();
+        }
+
+        var pollSeconds = Config.XivPfPollSeconds;
+        if (ImGui.InputInt("XIVPF poll interval (seconds)", ref pollSeconds))
+        {
+            Config.XivPfPollSeconds = Math.Clamp(pollSeconds, 60, 600);
+            Config.Save();
+        }
+
+        ImGui.TextWrapped("This checks xivpf.com in the background, so you do not need to open or refresh Party Finder. FFXIV/Dalamud must still be running because PartyPing runs inside the game client.");
+        ImGui.TextWrapped("XIVPF mode uses Duty name contains, keyword filters, and open-slot count. The public HTML feed does not expose Dalamud's structured recruiting-slot data reliably, so the selected role is shown as unverified for XIVPF-only matches.");
+        ImGui.TextDisabled(plugin.XivPfStatus);
+
         DrawSectionHeader("Discord notifications");
-        EditString("Discord URL", Config.TwilioAccountSid, v => Config.TwilioAccountSid = v, 512);
-        ImGui.TextDisabled("Paste the Discord incoming notification URL for the channel that should receive PartyPing alerts.");
+        var discordUrl = string.IsNullOrWhiteSpace(Config.DiscordWebhookUrl)
+            ? Config.TwilioAccountSid
+            : Config.DiscordWebhookUrl;
+        EditString("Discord URL", discordUrl, v =>
+        {
+            Config.DiscordWebhookUrl = v;
+            Config.TwilioAccountSid = v;
+        }, 512);
+        ImGui.TextDisabled("Paste the Discord incoming webhook URL for the channel that should receive PartyPing alerts.");
 
         if (ImGui.Button("Send test Discord notification"))
             _ = plugin.SendTestAsync();
@@ -94,7 +123,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.Spacing();
         DrawSectionHeader("Important");
-        ImGui.TextWrapped("PartyPing reacts to Party Finder listings that your game client receives. It does not automatically refresh Party Finder or scrape xivpf.com. Keep FFXIV running and ensure PF listings are being fetched/refreshed for alerts to fire.");
+        ImGui.TextWrapped("PartyPing can monitor both listings received by your game client and xivpf.com. XIVPF is crowdsourced, so listings can appear or disappear with some delay compared with the in-game Party Finder.");
     }
 
     private static void DrawSectionHeader(string text)
