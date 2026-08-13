@@ -354,7 +354,6 @@ public sealed class Plugin : IDalamudPlugin
             : "Not specified";
 
         return
-            "# PartyPing Match\n" +
             $"## {duty}\n" +
             "**Source:** In-game Party Finder\n" +
             $"**Recruiting slots:** {recruitingText}\n" +
@@ -381,7 +380,6 @@ public sealed class Plugin : IDalamudPlugin
             : $"{role.DisplayName()} - not verified by XIVPF HTML";
 
         return
-            "# PartyPing Match\n" +
             $"## {duty}\n" +
             "**Source:** XIVPF.com\n" +
             $"**Party:** {filledSlots}/{totalSlots}\n" +
