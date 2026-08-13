@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui.PartyFinder.Types;
 using Dalamud.Interface.Windowing;
@@ -16,11 +17,15 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IPartyFinderGui PartyFinderGui { get; private set; } = null!;
+    [PluginService] internal static IPartyList PartyList { get; private set; } = null!;
+    [PluginService] internal static IFramework Framework { get; private set; } = null!;
+    [PluginService] internal static ICondition Condition { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
     public Configuration Configuration { get; }
     internal string LastStatus { get; private set; } = "Idle";
     internal string XivPfStatus { get; private set; } = "XIVPF: waiting for first check";
+    internal string PartyFillStatus { get; private set; } = "Party fill: not in a party";
 
     private readonly WindowSystem windowSystem = new("PartyPing");
     private readonly ConfigWindow configWindow;
@@ -29,6 +34,11 @@ public sealed class Plugin : IDalamudPlugin
     private readonly CancellationTokenSource cancellation = new();
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> notifiedListings = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> notifiedXivPfListings = new(StringComparer.Ordinal);
+
+    private long trackedPartyId;
+    private int lastPartySize;
+    private bool partyFullNotificationSent;
+    private DateTime lastPartyCheckUtc = DateTime.MinValue;
 
     public Plugin()
     {
@@ -45,6 +55,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfig;
         PluginInterface.UiBuilder.OpenMainUi += ToggleConfig;
         PartyFinderGui.ReceiveListing += OnReceiveListing;
+        Framework.Update += OnFrameworkUpdate;
 
         _ = RunXivPfLoopAsync(cancellation.Token);
     }
@@ -52,6 +63,7 @@ public sealed class Plugin : IDalamudPlugin
     public void Dispose()
     {
         PartyFinderGui.ReceiveListing -= OnReceiveListing;
+        Framework.Update -= OnFrameworkUpdate;
         PluginInterface.UiBuilder.Draw -= windowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfig;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleConfig;
@@ -75,6 +87,92 @@ public sealed class Plugin : IDalamudPlugin
             "**Discord notifications are working.**\n\n" +
             "Your matching Party Finder listings will appear here."
         ).ConfigureAwait(false);
+    }
+
+    private void OnFrameworkUpdate(IFramework framework)
+    {
+        var now = DateTime.UtcNow;
+        if (now - lastPartyCheckUtc < TimeSpan.FromSeconds(1))
+            return;
+
+        lastPartyCheckUtc = now;
+
+        try
+        {
+            TrackPartyFill();
+        }
+        catch (Exception ex)
+        {
+            PartyFillStatus = "Party fill tracker error: " + ex.Message;
+            Log.Warning(ex, "PartyPing party fill tracker error");
+        }
+    }
+
+    private void TrackPartyFill()
+    {
+        var partySize = PartyList.Length;
+        var partyId = PartyList.PartyId;
+
+        if (PartyList.IsAlliance)
+        {
+            PartyFillStatus = "Party fill: alliance ignored";
+            ResetPartyTracking();
+            return;
+        }
+
+        if (partySize <= 1 || partyId == 0)
+        {
+            PartyFillStatus = "Party fill: not in a party";
+            ResetPartyTracking();
+            return;
+        }
+
+        if (IsBoundByDuty())
+        {
+            PartyFillStatus = $"Party fill: {partySize}/8 - inside duty, not tracking";
+            lastPartySize = partySize;
+            return;
+        }
+
+        if (trackedPartyId != partyId)
+        {
+            trackedPartyId = partyId;
+            partyFullNotificationSent = false;
+            lastPartySize = partySize;
+            PartyFillStatus = $"Party fill: tracking {partySize}/8";
+        }
+        else if (partySize != lastPartySize)
+        {
+            lastPartySize = partySize;
+            PartyFillStatus = $"Party fill: tracking {partySize}/8";
+        }
+
+        if (!Configuration.Enabled || !Configuration.NotifyWhenPartyFull)
+            return;
+
+        if (partySize < 8 || partyFullNotificationSent)
+            return;
+
+        partyFullNotificationSent = true;
+        PartyFillStatus = "Party fill: 8/8 - notification sent";
+
+        _ = SendDiscordAsync(
+            "## Party Filled\n" +
+            "**Party:** 8/8\n" +
+            "Your party is full and ready to go."
+        );
+    }
+
+    private static bool IsBoundByDuty() =>
+        Condition[ConditionFlag.BoundByDuty] ||
+        Condition[ConditionFlag.BoundByDuty56] ||
+        Condition[ConditionFlag.BoundByDuty95];
+
+    private void ResetPartyTracking()
+    {
+        trackedPartyId = 0;
+        lastPartySize = 0;
+        partyFullNotificationSent = false;
     }
 
     private void OnReceiveListing(IPartyFinderListing listing, IPartyFinderListingEventArgs args)
