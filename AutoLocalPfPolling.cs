@@ -5,35 +5,15 @@ public sealed partial class Plugin
     private const int LocalPfAutoPollMinimumSeconds = 30;
     private const int LocalPfAutoPollMaximumSeconds = 60;
 
-    // Local FFXIV PF and XIVPF both update the same tracked Discord-alert state.
-    // Serialize those operations so the two background pollers cannot mutate the
-    // shared dictionaries at the same time.
-    private readonly SemaphoreSlim pfPollGate = new(1, 1);
+    private bool localPfAutoPollingStarted;
 
-    internal async Task CheckLocalPfCoordinatedAsync()
+    internal void StartLocalPfAutoPolling()
     {
-        if (LocalPfCheckInProgress)
+        if (localPfAutoPollingStarted)
             return;
 
-        LocalPfStatus = "Local PF: waiting for any current PF check to finish...";
-
-        try
-        {
-            await pfPollGate.WaitAsync(cancellation.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-            return;
-        }
-
-        try
-        {
-            await CheckLocalPfNowAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            pfPollGate.Release();
-        }
+        localPfAutoPollingStarted = true;
+        _ = RunLocalPfLoopAsync(cancellation.Token);
     }
 
     private async Task RunLocalPfLoopAsync(CancellationToken cancellationToken)
@@ -64,7 +44,7 @@ public sealed partial class Plugin
                 if (!Configuration.Enabled || string.IsNullOrWhiteSpace(Configuration.DutyNameContains))
                     continue;
 
-                await CheckLocalPfCoordinatedAsync().ConfigureAwait(false);
+                await CheckLocalPfNowAsync().ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
