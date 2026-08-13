@@ -1,14 +1,20 @@
-name: build
+name: Publish PartyPing Plugin
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  pull_request:
-  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: partyping-plugin-publish
+  cancel-in-progress: false
 
 jobs:
-  build:
+  publish:
     runs-on: windows-latest
 
     steps:
@@ -26,32 +32,104 @@ jobs:
         run: |
           $dalamudPath = Join-Path $env:APPDATA "XIVLauncher\addon\Hooks\dev"
           $dalamudZip = Join-Path $env:RUNNER_TEMP "dalamud.zip"
-
           New-Item -ItemType Directory -Force -Path $dalamudPath | Out-Null
-
           Invoke-WebRequest `
             -Uri "https://goatcorp.github.io/dalamud-distrib/latest.zip" `
             -OutFile $dalamudZip
+          Expand-Archive -Path $dalamudZip -DestinationPath $dalamudPath -Force
 
-          Expand-Archive `
-            -Path $dalamudZip `
-            -DestinationPath $dalamudPath `
-            -Force
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $project = [xml](Get-Content .\PartyPing.csproj -Raw)
+          $version = [string]$project.Project.PropertyGroup.Version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "PartyPing.csproj does not define a Version."
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Restore
-        run: dotnet restore PartyPing.csproj
+        run: dotnet restore .\PartyPing.csproj
 
       - name: Build
-        run: |
-          dotnet build PartyPing.csproj `
-            -c Release `
-            -p:Platform=x64 `
-            --no-restore
+        run: >-
+          dotnet build .\PartyPing.csproj
+          -c Release
+          -p:Platform=x64
+          -p:Version=${{ steps.version.outputs.version }}
+          --no-restore
 
-      - name: Upload build output
+      - name: Create custom repository assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts, package | Out-Null
+
+          $pluginZip = Get-ChildItem -Path . -Recurse -Filter latest.zip |
+            Where-Object { $_.FullName -match "PartyPing" } |
+            Select-Object -First 1
+
+          if (-not $pluginZip) {
+            throw "The plugin built, but Dalamud's latest.zip package was not found."
+          }
+
+          Expand-Archive -Path $pluginZip.FullName -DestinationPath package -Force
+
+          $manifestFile = Get-ChildItem -Path package -Recurse -Filter PartyPing.json |
+            Select-Object -First 1
+
+          if (-not $manifestFile) {
+            throw "PartyPing.json was not present inside the plugin package."
+          }
+
+          $repositoryUrl = "https://github.com/${{ github.repository }}"
+          $releaseBase = "$repositoryUrl/releases/latest/download"
+          $pluginUrl = "$releaseBase/PartyPing-latest.zip"
+          $manifest = Get-Content $manifestFile.FullName -Raw | ConvertFrom-Json
+          $manifest | Add-Member -NotePropertyName RepoUrl -NotePropertyValue $repositoryUrl -Force
+          $manifest | ConvertTo-Json -Depth 20 | Set-Content $manifestFile.FullName -Encoding utf8
+
+          Compress-Archive -Path package\* -DestinationPath artifacts\PartyPing-latest.zip -Force
+
+          $repoEntry = $manifest.PSObject.Copy()
+          $repoEntry | Add-Member -NotePropertyName TestingAssemblyVersion -NotePropertyValue $null -Force
+          $repoEntry | Add-Member -NotePropertyName IsHide -NotePropertyValue $false -Force
+          $repoEntry | Add-Member -NotePropertyName IsTestingExclusive -NotePropertyValue $false -Force
+          $repoEntry | Add-Member -NotePropertyName DownloadLinkInstall -NotePropertyValue $pluginUrl -Force
+          $repoEntry | Add-Member -NotePropertyName DownloadLinkUpdate -NotePropertyValue $pluginUrl -Force
+          $repoEntry | Add-Member -NotePropertyName DownloadLinkTesting -NotePropertyValue $pluginUrl -Force
+          $repoEntry | Add-Member -NotePropertyName LastUpdate -NotePropertyValue ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()) -Force
+          ConvertTo-Json -InputObject @($repoEntry) -Depth 20 | Set-Content artifacts\repo.json -Encoding utf8
+
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if (gh release view $env:RELEASE_TAG 2>$null) {
+            gh release upload $env:RELEASE_TAG `
+              artifacts\PartyPing-latest.zip `
+              artifacts\repo.json `
+              --clobber
+          }
+          else {
+            gh release create $env:RELEASE_TAG `
+              artifacts\PartyPing-latest.zip `
+              artifacts\repo.json `
+              --title "PartyPing $env:RELEASE_VERSION" `
+              --notes "Automated PartyPing Dalamud custom repository release." `
+              --latest
+          }
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PartyPing
+          name: PartyPing-${{ steps.version.outputs.version }}
           path: |
-            bin/x64/Release/**
+            artifacts/PartyPing-latest.zip
+            artifacts/repo.json
           if-no-files-found: error
+          retention-days: 30
