@@ -119,7 +119,7 @@ public sealed class Plugin : IDalamudPlugin
 
             var totalSlots = listing.SlotsAvailable;
             var filled = listing.SlotsFilled;
-            var world = listing.CurrentWorld.ToString();
+            var world = listing.CurrentWorld.ToString() ?? "Unknown";
             var message = BuildMessage(dutyName, filled, totalSlots, world, config.RequiredRole, description);
 
             _ = SendSmsAsync(message);
@@ -183,7 +183,7 @@ public sealed class Plugin : IDalamudPlugin
         if (role == RoleFilter.AnyRole)
             return true;
 
-        return listing.Slots.Any(slot => slot.Accepting.Any(role.Matches));
+        return listing.Slots.Any(slot => slot.Accepting.Any(job => role.Matches(job)));
     }
 
     private static string BuildMessage(string duty, int filled, int total, string world, RoleFilter role, string description)
