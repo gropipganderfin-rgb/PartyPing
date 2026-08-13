@@ -5,7 +5,7 @@ namespace PartyPing;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
 
     public bool Enabled { get; set; } = false;
     public ushort DutyId { get; set; } = 0;
@@ -19,6 +19,8 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool XivPfPollingEnabled { get; set; } = true;
     public int XivPfPollSeconds { get; set; } = 90;
+
+    public bool NotifyWhenPartyFull { get; set; } = true;
 
     public string TwilioAccountSid { get; set; } = string.Empty;
     public string TwilioAuthToken { get; set; } = string.Empty;
