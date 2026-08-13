@@ -14,6 +14,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public ConfigWindow(Plugin plugin) : base("PartyPing###PartyPingConfig")
     {
         this.plugin = plugin;
+        plugin.StartLocalPfAutoPolling();
         Size = new Vector2(680, 820);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
@@ -95,12 +96,12 @@ public sealed class ConfigWindow : Window, IDisposable
             Config.Save();
         }
 
-        ImGui.TextWrapped("Background Party Finder monitoring comes from XIVPF.com. Use the manual local check below whenever you want a fresher result directly from FFXIV.");
+        ImGui.TextWrapped("Background Party Finder monitoring comes from XIVPF.com. PartyPing also polls the local FFXIV Party Finder automatically below for fresher results.");
         ImGui.TextWrapped("Each PF alert is tracked by its Discord message ID. PartyPing edits or removes the post as the listing changes.");
         ImGui.TextWrapped("FFXIV/Dalamud must still be running because PartyPing runs inside the game client.");
         ImGui.TextDisabled(plugin.XivPfStatus);
 
-        DrawSectionHeader("Local Party Finder check");
+        DrawSectionHeader("Local Party Finder polling");
 
         if (plugin.LocalPfCheckInProgress)
             ImGui.BeginDisabled();
@@ -111,8 +112,8 @@ public sealed class ConfigWindow : Window, IDisposable
         if (plugin.LocalPfCheckInProgress)
             ImGui.EndDisabled();
 
-        ImGui.TextWrapped("User-triggered only. Requests the High-End Duty Party Finder category directly from FFXIV without opening the Party Finder window.");
-        ImGui.TextWrapped("The local result uses the same duty/keyword/open-slot filters and exact local job-slot data for your selected role. Matching Discord posts are created or updated; locally invalid or closed listings are removed when the scan can prove it safely.");
+        ImGui.TextWrapped("Automatic. PartyPing chooses a new whole-second interval from 30 through 60 seconds after each cycle and requests the High-End Duty Party Finder category directly from FFXIV without opening the Party Finder window.");
+        ImGui.TextWrapped("The button above still performs an immediate check. Local results use the same duty/keyword/open-slot filters and exact local job-slot data for your selected role. Matching Discord posts are created or updated; locally invalid or closed listings are removed when the scan can prove it safely.");
         ImGui.TextDisabled(plugin.LocalPfStatus);
 
         DrawSectionHeader("My party tracker");
@@ -152,13 +153,13 @@ public sealed class ConfigWindow : Window, IDisposable
         if (clearInProgress)
             ImGui.EndDisabled();
 
-        ImGui.TextDisabled("Deletes tracked PartyPing posts, then matching XIVPF listings repopulate on the next poll.");
+        ImGui.TextDisabled("Deletes tracked PartyPing posts, then matching listings repopulate on the next poll.");
         if (!string.IsNullOrWhiteSpace(clearStatus))
             ImGui.TextWrapped(clearStatus);
 
         ImGui.Spacing();
         DrawSectionHeader("Important");
-        ImGui.TextWrapped("XIVPF is crowdsourced, so it can lag behind the in-game Party Finder. The local check is fresher but is manual by design and currently requests High-End Duty only.");
+        ImGui.TextWrapped("XIVPF is crowdsourced, so it can lag behind the in-game Party Finder. Local FFXIV checks now run automatically at a randomized 30-60 second interval and currently request High-End Duty only.");
     }
 
     private async Task ClearDiscordMessagesAsync()
@@ -176,7 +177,7 @@ public sealed class ConfigWindow : Window, IDisposable
             if (result.Failed == 0)
             {
                 plugin.ResetXivPfAlertStateAfterManualClear();
-                clearStatus = $"Cleared {result.Removed} PartyPing Discord message(s). Matching XIVPF listings will repopulate on the next poll.";
+                clearStatus = $"Cleared {result.Removed} PartyPing Discord message(s). Matching listings will repopulate on the next poll.";
             }
             else
             {
