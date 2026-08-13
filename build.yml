@@ -1,0 +1,24 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore PartyPing/PartyPing.csproj
+      - name: Build
+        run: dotnet build PartyPing/PartyPing.csproj -c Release --no-restore
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: PartyPing
+          path: PartyPing/bin/Release/**
