@@ -8,6 +8,8 @@ public sealed class ConfigWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
     private Configuration Config => plugin.Configuration;
+    private string clearStatus = string.Empty;
+    private bool clearInProgress;
 
     public ConfigWindow(Plugin plugin) : base("PartyPing###PartyPingConfig")
     {
@@ -126,8 +128,47 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextWrapped(plugin.LastStatus);
 
         ImGui.Spacing();
+        if (clearInProgress)
+            ImGui.BeginDisabled();
+
+        if (ImGui.Button("Clear PartyPing Discord messages"))
+            _ = ClearDiscordMessagesAsync();
+
+        if (clearInProgress)
+            ImGui.EndDisabled();
+
+        ImGui.TextDisabled("Deletes messages created and tracked by PartyPing. It does not touch other users' or bots' messages.");
+        if (!string.IsNullOrWhiteSpace(clearStatus))
+            ImGui.TextWrapped(clearStatus);
+
+        ImGui.Spacing();
         DrawSectionHeader("Important");
         ImGui.TextWrapped("XIVPF is crowdsourced, so listings can appear, update, fill, or disappear with some delay compared with the in-game Party Finder.");
+    }
+
+    private async Task ClearDiscordMessagesAsync()
+    {
+        if (clearInProgress)
+            return;
+
+        clearInProgress = true;
+        clearStatus = "Clearing PartyPing Discord messages...";
+
+        try
+        {
+            var result = await DiscordClearer.ClearAsync(Config, CancellationToken.None).ConfigureAwait(false);
+            clearStatus = result.Failed == 0
+                ? $"Cleared {result.Removed} PartyPing Discord message(s)."
+                : $"Cleared {result.Removed} message(s); {result.Failed} could not be removed.";
+        }
+        catch (Exception ex)
+        {
+            clearStatus = "Clear failed: " + ex.Message;
+        }
+        finally
+        {
+            clearInProgress = false;
+        }
     }
 
     private static void DrawSectionHeader(string text)
