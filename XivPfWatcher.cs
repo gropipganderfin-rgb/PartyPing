@@ -122,7 +122,10 @@ internal sealed class XivPfWatcher : IDisposable
                 continue;
 
             var duty = lines[i];
-            var fingerprint = $"{duty}\u001f{description}\u001f{recruiter}\u001f{world}";
+
+            // Keep the identity stable while description and slot counts change so an
+            // existing Discord alert can be edited instead of deleted/reposted.
+            var fingerprint = $"{duty}\u001f{recruiter}\u001f{world}";
             if (!seen.Add(fingerprint))
                 continue;
 
