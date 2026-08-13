@@ -39,7 +39,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private bool partyFullNotificationSent;
     private DateTime lastPartyCheckUtc = DateTime.MinValue;
 
-    private sealed record ActiveXivPfAlert(string MessageId, DateTimeOffset CreatedAt);
+    private sealed record ActiveXivPfAlert(string MessageId, DateTimeOffset CreatedAt, string LastContent);
 
     public Plugin()
     {
@@ -242,6 +242,7 @@ public sealed partial class Plugin : IDalamudPlugin
 
             var matchingCount = 0;
             var newAlertCount = 0;
+            var updatedAlertCount = 0;
 
             foreach (var listing in listings)
             {
@@ -249,8 +250,13 @@ public sealed partial class Plugin : IDalamudPlugin
                     continue;
 
                 matchingCount++;
-                if (activeXivPfAlerts.ContainsKey(listing.Fingerprint))
+
+                if (activeXivPfAlerts.TryGetValue(listing.Fingerprint, out var activeAlert))
+                {
+                    if (await UpdateXivPfListingAsync(listing, activeAlert, config, cancellationToken).ConfigureAwait(false))
+                        updatedAlertCount++;
                     continue;
+                }
 
                 if (await NotifyXivPfListingAsync(listing, config, cancellationToken).ConfigureAwait(false))
                     newAlertCount++;
@@ -258,7 +264,7 @@ public sealed partial class Plugin : IDalamudPlugin
 
             XivPfStatus =
                 $"XIVPF: checked {DateTime.Now:t} - {listings.Count} listings, {matchingCount} matched, " +
-                $"{newAlertCount} new, {removedCount} removed";
+                $"{newAlertCount} new, {updatedAlertCount} updated, {removedCount} removed";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -282,35 +288,21 @@ public sealed partial class Plugin : IDalamudPlugin
         foreach (var pair in activeXivPfAlerts.ToArray())
         {
             var stillPresent = currentListings.TryGetValue(pair.Key, out var listing);
-            var isFull = stillPresent && listing!.TotalSlots > 0 && listing.FilledSlots >= listing.TotalSlots;
-
-            var selectedRoleFilled = false;
-            if (stillPresent && !isFull && config.RequiredRole != RoleFilter.AnyRole)
-            {
-                var roleKey = XivPfRoleWatcher.Key(listing!);
-                if (roleAvailability.TryGetValue(roleKey, out var roles))
-                    selectedRoleFilled = !roles.Matches(config.RequiredRole);
-            }
-
-            if (stillPresent && !isFull && !selectedRoleFilled)
+            var removalReason = GetRemovalReason(stillPresent, listing, roleAvailability, config);
+            if (removalReason is null)
                 continue;
 
             try
             {
                 await smsSender.DeleteAsync(config, pair.Value.MessageId, cancellationToken).ConfigureAwait(false);
                 activeXivPfAlerts.Remove(pair.Key);
+                notifiedXivPfListings.Remove(pair.Key);
                 removedCount++;
-
-                var reason = isFull
-                    ? "party filled"
-                    : selectedRoleFilled
-                        ? "selected role filled"
-                        : "listing disappeared";
 
                 Log.Information(
                     "Removed Discord alert for XIVPF listing {Fingerprint}; reason: {Reason}",
                     pair.Key,
-                    reason);
+                    removalReason);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -323,6 +315,35 @@ public sealed partial class Plugin : IDalamudPlugin
         }
 
         return removedCount;
+    }
+
+    private static string? GetRemovalReason(
+        bool stillPresent,
+        XivPfListing? listing,
+        IReadOnlyDictionary<string, RoleAvailability> roleAvailability,
+        Configuration config)
+    {
+        if (!stillPresent || listing is null)
+            return "listing disappeared";
+
+        if (listing.TotalSlots > 0 && listing.FilledSlots >= listing.TotalSlots)
+            return "party filled";
+
+        var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
+        if (openSlots < Math.Max(0, config.MinimumOpenSlots))
+            return "minimum open slots no longer met";
+
+        if (!MatchesTextRules(listing.Duty, listing.Description, config))
+            return "description/keyword requirements no longer met";
+
+        if (config.RequiredRole != RoleFilter.AnyRole)
+        {
+            var roleKey = XivPfRoleWatcher.Key(listing);
+            if (roleAvailability.TryGetValue(roleKey, out var roles) && !roles.Matches(config.RequiredRole))
+                return "selected role filled";
+        }
+
+        return null;
     }
 
     private static bool MatchesXivPfListing(
@@ -358,23 +379,14 @@ public sealed partial class Plugin : IDalamudPlugin
         if (notifiedXivPfListings.TryGetValue(listing.Fingerprint, out var last) && now - last < cooldown)
             return false;
 
-        var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
-        var message = BuildXivPfMessage(
-            listing.Duty,
-            listing.FilledSlots,
-            listing.TotalSlots,
-            openSlots,
-            listing.World,
-            listing.Recruiter,
-            config.RequiredRole,
-            listing.Description);
+        var message = BuildXivPfMessage(listing, config.RequiredRole);
 
         try
         {
             LastStatus = "Sending Discord notification...";
             var result = await smsSender.SendTrackedAsync(config, message, cancellationToken).ConfigureAwait(false);
 
-            activeXivPfAlerts[listing.Fingerprint] = new ActiveXivPfAlert(result.MessageId, now);
+            activeXivPfAlerts[listing.Fingerprint] = new ActiveXivPfAlert(result.MessageId, now, message);
             notifiedXivPfListings[listing.Fingerprint] = now;
 
             LastStatus = result.Status + " at " + DateTime.Now.ToString("t");
@@ -389,6 +401,42 @@ public sealed partial class Plugin : IDalamudPlugin
         {
             LastStatus = "Discord notification failed: " + ex.Message;
             Log.Error(ex, "PartyPing Discord notification failed");
+            return false;
+        }
+    }
+
+    private async Task<bool> UpdateXivPfListingAsync(
+        XivPfListing listing,
+        ActiveXivPfAlert activeAlert,
+        Configuration config,
+        CancellationToken cancellationToken)
+    {
+        var message = BuildXivPfMessage(listing, config.RequiredRole);
+        if (string.Equals(message, activeAlert.LastContent, StringComparison.Ordinal))
+            return false;
+
+        try
+        {
+            LastStatus = "Updating Discord notification...";
+            var result = await smsSender.EditAsync(
+                config,
+                activeAlert.MessageId,
+                message,
+                cancellationToken).ConfigureAwait(false);
+
+            activeXivPfAlerts[listing.Fingerprint] = activeAlert with { LastContent = message };
+            LastStatus = result + " at " + DateTime.Now.ToString("t");
+            Log.Information("Updated Discord alert for XIVPF listing {Fingerprint}", listing.Fingerprint);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LastStatus = "Discord update failed: " + ex.Message;
+            Log.Warning(ex, "Could not update Discord alert for XIVPF listing {Fingerprint}", listing.Fingerprint);
             return false;
         }
     }
@@ -445,6 +493,20 @@ public sealed partial class Plugin : IDalamudPlugin
 
     private static TimeSpan GetListingCooldown(Configuration config) =>
         TimeSpan.FromMinutes(Math.Clamp(config.PerListingCooldownMinutes, 1, 1440));
+
+    private static string BuildXivPfMessage(XivPfListing listing, RoleFilter role)
+    {
+        var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
+        return BuildXivPfMessage(
+            listing.Duty,
+            listing.FilledSlots,
+            listing.TotalSlots,
+            openSlots,
+            listing.World,
+            listing.Recruiter,
+            role,
+            listing.Description);
+    }
 
     private static string BuildXivPfMessage(
         string duty,
