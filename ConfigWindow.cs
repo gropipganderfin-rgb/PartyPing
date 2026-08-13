@@ -27,17 +27,10 @@ public sealed class ConfigWindow : Window, IDisposable
             Config.Save();
         }
 
-        DrawSectionHeader("Match rules");
-
-        var dutyId = (int)Config.DutyId;
-        if (ImGui.InputInt("Duty ID (0 = any)", ref dutyId))
-        {
-            Config.DutyId = (ushort)Math.Clamp(dutyId, 0, ushort.MaxValue);
-            Config.Save();
-        }
+        DrawSectionHeader("XIVPF match rules");
 
         EditString("Duty name contains", Config.DutyNameContains, v => Config.DutyNameContains = v, 128);
-        ImGui.TextDisabled("Duty name is also used by XIVPF background monitoring.");
+        ImGui.TextDisabled("Example: Dancing Mad");
 
         EditString("Include keywords", Config.IncludeKeywords, v => Config.IncludeKeywords = v, 512);
         ImGui.TextDisabled("Separate keywords with commas. Example: p3, bh, enrage");
@@ -51,7 +44,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var role = Config.RequiredRole;
-        if (ImGui.BeginCombo("Required open role", role.DisplayName()))
+        if (ImGui.BeginCombo("Preferred role label", role.DisplayName()))
         {
             foreach (var candidate in Enum.GetValues<RoleFilter>())
             {
@@ -68,7 +61,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
             ImGui.EndCombo();
         }
-        ImGui.TextDisabled("Structured role filtering is exact for listings received in-game.");
+        ImGui.TextDisabled("XIVPF HTML does not reliably expose structured open-role data, so this is shown as unverified in alerts.");
 
         var slots = Config.MinimumOpenSlots;
         if (ImGui.InputInt("Minimum open slots", ref slots))
@@ -100,9 +93,20 @@ public sealed class ConfigWindow : Window, IDisposable
             Config.Save();
         }
 
-        ImGui.TextWrapped("This checks xivpf.com in the background, so you do not need to open or refresh Party Finder. FFXIV/Dalamud must still be running because PartyPing runs inside the game client.");
-        ImGui.TextWrapped("XIVPF mode uses Duty name contains, keyword filters, and open-slot count. The public HTML feed does not expose Dalamud's structured recruiting-slot data reliably, so the selected role is shown as unverified for XIVPF-only matches.");
+        ImGui.TextWrapped("Party Finder alerts now come from XIVPF.com only. PartyPing no longer listens for local in-game Party Finder listing refreshes.");
+        ImGui.TextWrapped("Each XIVPF alert is tracked by its Discord message ID. When that listing becomes full or disappears from XIVPF, PartyPing removes that specific Discord post automatically.");
+        ImGui.TextWrapped("FFXIV/Dalamud must still be running because PartyPing runs inside the game client.");
         ImGui.TextDisabled(plugin.XivPfStatus);
+
+        DrawSectionHeader("My party tracker");
+
+        var notifyWhenFull = Config.NotifyWhenPartyFull;
+        if (ImGui.Checkbox("Notify me when my joined party reaches 8/8", ref notifyWhenFull))
+        {
+            Config.NotifyWhenPartyFull = notifyWhenFull;
+            Config.Save();
+        }
+        ImGui.TextDisabled(plugin.PartyFillStatus);
 
         DrawSectionHeader("Discord notifications");
         var discordUrl = string.IsNullOrWhiteSpace(Config.DiscordWebhookUrl)
@@ -123,7 +127,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.Spacing();
         DrawSectionHeader("Important");
-        ImGui.TextWrapped("PartyPing can monitor both listings received by your game client and xivpf.com. XIVPF is crowdsourced, so listings can appear or disappear with some delay compared with the in-game Party Finder.");
+        ImGui.TextWrapped("XIVPF is crowdsourced, so listings can appear, update, fill, or disappear with some delay compared with the in-game Party Finder.");
     }
 
     private static void DrawSectionHeader(string text)
