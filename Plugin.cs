@@ -28,6 +28,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ConfigWindow configWindow;
     private readonly SmsSender smsSender = new();
     private readonly XivPfWatcher xivPfWatcher = new();
+    private readonly XivPfRoleWatcher xivPfRoleWatcher = new();
     private readonly CancellationTokenSource cancellation = new();
 
     private readonly Dictionary<string, DateTimeOffset> notifiedXivPfListings = new(StringComparer.Ordinal);
@@ -68,6 +69,7 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandName);
 
         cancellation.Cancel();
+        xivPfRoleWatcher.Dispose();
         xivPfWatcher.Dispose();
         smsSender.Dispose();
         cancellation.Dispose();
@@ -220,17 +222,22 @@ public sealed class Plugin : IDalamudPlugin
         {
             var config = Configuration;
             var listings = await xivPfWatcher.FetchAsync(config.DutyNameContains, cancellationToken).ConfigureAwait(false);
+            var roleAvailability = await xivPfRoleWatcher.FetchAsync(cancellationToken).ConfigureAwait(false);
             var currentListings = listings.ToDictionary(x => x.Fingerprint, StringComparer.Ordinal);
 
             CleanupOldXivPfListings();
-            var removedCount = await RemoveClosedXivPfAlertsAsync(currentListings, config, cancellationToken).ConfigureAwait(false);
+            var removedCount = await RemoveClosedXivPfAlertsAsync(
+                currentListings,
+                roleAvailability,
+                config,
+                cancellationToken).ConfigureAwait(false);
 
             var matchingCount = 0;
             var newAlertCount = 0;
 
             foreach (var listing in listings)
             {
-                if (!MatchesXivPfListing(listing, config))
+                if (!MatchesXivPfListing(listing, roleAvailability, config))
                     continue;
 
                 matchingCount++;
@@ -258,6 +265,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private async Task<int> RemoveClosedXivPfAlertsAsync(
         IReadOnlyDictionary<string, XivPfListing> currentListings,
+        IReadOnlyDictionary<string, RoleAvailability> roleAvailability,
         Configuration config,
         CancellationToken cancellationToken)
     {
@@ -268,7 +276,15 @@ public sealed class Plugin : IDalamudPlugin
             var stillPresent = currentListings.TryGetValue(pair.Key, out var listing);
             var isFull = stillPresent && listing!.TotalSlots > 0 && listing.FilledSlots >= listing.TotalSlots;
 
-            if (stillPresent && !isFull)
+            var selectedRoleFilled = false;
+            if (stillPresent && !isFull && config.RequiredRole != RoleFilter.AnyRole)
+            {
+                var roleKey = XivPfRoleWatcher.Key(listing!);
+                if (roleAvailability.TryGetValue(roleKey, out var roles))
+                    selectedRoleFilled = !roles.Matches(config.RequiredRole);
+            }
+
+            if (stillPresent && !isFull && !selectedRoleFilled)
                 continue;
 
             try
@@ -276,10 +292,17 @@ public sealed class Plugin : IDalamudPlugin
                 await smsSender.DeleteAsync(config, pair.Value.MessageId, cancellationToken).ConfigureAwait(false);
                 activeXivPfAlerts.Remove(pair.Key);
                 removedCount++;
+
+                var reason = isFull
+                    ? "party filled"
+                    : selectedRoleFilled
+                        ? "selected role filled"
+                        : "listing disappeared";
+
                 Log.Information(
                     "Removed Discord alert for XIVPF listing {Fingerprint}; reason: {Reason}",
                     pair.Key,
-                    isFull ? "party filled" : "listing disappeared");
+                    reason);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -294,7 +317,10 @@ public sealed class Plugin : IDalamudPlugin
         return removedCount;
     }
 
-    private static bool MatchesXivPfListing(XivPfListing listing, Configuration config)
+    private static bool MatchesXivPfListing(
+        XivPfListing listing,
+        IReadOnlyDictionary<string, RoleAvailability> roleAvailability,
+        Configuration config)
     {
         var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
         if (openSlots < Math.Max(0, config.MinimumOpenSlots))
@@ -303,6 +329,13 @@ public sealed class Plugin : IDalamudPlugin
         if (!string.IsNullOrWhiteSpace(config.DutyNameContains) &&
             !listing.Duty.Contains(config.DutyNameContains.Trim(), StringComparison.OrdinalIgnoreCase))
             return false;
+
+        if (config.RequiredRole != RoleFilter.AnyRole)
+        {
+            var roleKey = XivPfRoleWatcher.Key(listing);
+            if (!roleAvailability.TryGetValue(roleKey, out var roles) || !roles.Matches(config.RequiredRole))
+                return false;
+        }
 
         return MatchesTextRules(listing.Duty, listing.Description, config);
     }
@@ -418,7 +451,7 @@ public sealed class Plugin : IDalamudPlugin
         var cleaned = CleanDescription(description);
         var roleText = role == RoleFilter.AnyRole
             ? "Any role"
-            : $"{role.DisplayName()} - not verified by XIVPF HTML";
+            : $"{role.DisplayName()} - open";
 
         return
             $"## {duty}\n" +
