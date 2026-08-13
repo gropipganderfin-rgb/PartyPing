@@ -5,7 +5,7 @@ namespace PartyPing;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 5;
+    public int Version { get; set; } = 6;
 
     public bool Enabled { get; set; } = false;
     public ushort DutyId { get; set; } = 0;
@@ -27,6 +27,7 @@ public sealed class Configuration : IPluginConfiguration
     public string TwilioFromNumber { get; set; } = string.Empty;
     public string ToNumber { get; set; } = string.Empty;
     public string DiscordWebhookUrl { get; set; } = string.Empty;
+    public List<string> TrackedDiscordMessageIds { get; set; } = [];
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }
