@@ -39,15 +39,7 @@ internal sealed class DiscordNotifier : IDisposable
         var webhookUrl = ValidateWebhookUrl(config.DiscordWebhookUrl);
         var executeUrl = WithWait(webhookUrl);
 
-        var payload = new
-        {
-            username = "PartyPing",
-            content = body,
-            allowed_mentions = new
-            {
-                parse = Array.Empty<string>(),
-            },
-        };
+        var payload = CreatePayload(body, includeUsername: true);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, executeUrl)
         {
@@ -75,6 +67,34 @@ internal sealed class DiscordNotifier : IDisposable
         return new DiscordSendResult("Discord notification sent", messageId);
     }
 
+    public async Task<string> EditAsync(
+        Configuration config,
+        string messageId,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(messageId))
+            throw new InvalidOperationException("Discord message ID is missing.");
+
+        var webhookUrl = ValidateWebhookUrl(config.DiscordWebhookUrl);
+        var editUrl = BuildMessageUrl(webhookUrl, messageId);
+        var payload = CreatePayload(body, includeUsername: false);
+
+        using var request = new HttpRequestMessage(HttpMethod.Patch, editUrl)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+        };
+
+        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException($"Discord edit returned {(int)response.StatusCode}: {Trim(responseBody, 220)}");
+        }
+
+        return "Discord notification updated";
+    }
+
     public async Task<string> DeleteAsync(Configuration config, string messageId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(messageId))
@@ -96,6 +116,31 @@ internal sealed class DiscordNotifier : IDisposable
         }
 
         return "Discord notification removed";
+    }
+
+    private static object CreatePayload(string body, bool includeUsername)
+    {
+        if (includeUsername)
+        {
+            return new
+            {
+                username = "PartyPing",
+                content = body,
+                allowed_mentions = new
+                {
+                    parse = Array.Empty<string>(),
+                },
+            };
+        }
+
+        return new
+        {
+            content = body,
+            allowed_mentions = new
+            {
+                parse = Array.Empty<string>(),
+            },
+        };
     }
 
     private static Uri WithWait(Uri webhookUrl)
