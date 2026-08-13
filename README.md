@@ -1,6 +1,6 @@
 # PartyPing
 
-PartyPing is a Dalamud API 15 plugin that sends an SMS through Twilio when a Party Finder listing received by your FFXIV client matches your configured duty/prog filters.
+PartyPing is a Dalamud API 15 plugin that sends a Discord notification when a Party Finder listing received by your FFXIV client matches your configured duty/prog filters.
 
 ## What it matches
 
@@ -24,35 +24,25 @@ Example TEA Wormhole setup:
 
 Role filtering uses Dalamud's structured Party Finder slot data. Each recruiting slot reports which jobs it accepts, and PartyPing only alerts when at least one recruiting slot accepts a job in your selected role. It does not guess the role from the PF description.
 
-## Install/build
+## Install
 
-This project targets current Dalamud API 15 using `Dalamud.NET.Sdk/15.0.0` and .NET 10.
+Add this custom plugin repository URL in Dalamud Settings -> Experimental -> Custom Plugin Repositories:
 
-1. Install the .NET 10 SDK.
-2. Clone/extract this project.
-3. Run `dotnet build PartyPing/PartyPing.csproj -c Release`.
-4. In Dalamud, enable developer plugins and point it at the generated PartyPing DLL, or publish it through your custom plugin repository workflow.
-5. Run `/partyping` in game.
+`https://github.com/gropipganderfin-rgb/PartyPing/releases/latest/download/repo.json`
 
-## Twilio setup
+Then open `/xlplugins`, search for PartyPing, and install it normally.
 
-Create a Twilio account/number, then enter:
+## Discord setup
 
-- Account SID
-- Auth Token
-- Twilio From number (E.164, such as `+15551234567`)
-- Your destination number (E.164)
+1. In Discord, create an incoming notification URL for the channel where you want PartyPing alerts.
+2. Copy that URL.
+3. In FFXIV, run `/partyping`.
+4. Paste it into `Discord URL`.
+5. Click `Send test Discord notification`.
+6. Enable Discord alerts.
 
-Use **Send test SMS** before enabling alerts.
-
-Twilio trial accounts may require the destination number to be verified.
+PartyPing sends messages directly to the Discord channel. It does not require a Discord bot.
 
 ## Important limitation
 
-The native Dalamud `IPartyFinderGui.ReceiveListing` event fires when the game receives PF listings. PartyPing deliberately does **not** automate PF refreshes and does **not** scrape xivpf.com. That means FFXIV must be running and the client must actually be receiving PF listing results for the SMS trigger to see them.
-
-For true away-from-PC monitoring, the better architecture is an external xivpf.com/PartyFinderEx alert source -> webhook -> SMS gateway. That can be added as a second mode later without automating the game client.
-
-## Security
-
-The Twilio auth token is currently saved in the Dalamud plugin configuration. Treat that file as a secret. A production version should move the credential to Windows Credential Manager or a small server-side webhook.
+The native Dalamud `IPartyFinderGui.ReceiveListing` event fires when the game receives PF listings. PartyPing deliberately does **not** automate PF refreshes and does **not** scrape xivpf.com. FFXIV must be running and the client must actually be receiving PF listing results for alerts to fire.
