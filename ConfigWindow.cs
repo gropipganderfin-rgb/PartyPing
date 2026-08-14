@@ -14,7 +14,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public ConfigWindow(Plugin plugin) : base("PartyPing###PartyPingConfig")
     {
         this.plugin = plugin;
-        Size = new Vector2(680, 760);
+        Size = new Vector2(700, 900);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -97,16 +97,25 @@ public sealed class ConfigWindow : Window, IDisposable
         }
         ImGui.TextDisabled(plugin.PartyFillStatus);
 
-        DrawSectionHeader("Discord notifications");
+        DrawSectionHeader("Discord bot - interactive PF buttons");
+        ImGui.TextWrapped("Configure a Discord application bot here to get a native Open in FFXIV button on each PF card. PartyPing connects directly to Discord's Gateway; clicking the button does not open a browser.");
+
+        EditSecret("Bot token", Config.DiscordBotToken, v => Config.DiscordBotToken = v, 256);
+        EditString("Channel ID", Config.DiscordChannelId, v => Config.DiscordChannelId = v, 32);
+        EditString("Your Discord user ID", Config.DiscordUserId, v => Config.DiscordUserId = v, 32);
+        ImGui.TextDisabled("The user ID restriction prevents other people in the channel from controlling your local FFXIV client.");
+        ImGui.TextWrapped(plugin.DiscordBotStatus);
+
+        DrawSectionHeader("Discord fallback / migration");
         var discordUrl = string.IsNullOrWhiteSpace(Config.DiscordWebhookUrl)
             ? Config.TwilioAccountSid
             : Config.DiscordWebhookUrl;
-        EditString("Discord URL", discordUrl, v =>
+        EditString("Legacy webhook URL", discordUrl, v =>
         {
             Config.DiscordWebhookUrl = v;
             Config.TwilioAccountSid = v;
         }, 512);
-        ImGui.TextDisabled("Paste the Discord incoming webhook URL for the channel that should receive PartyPing alerts.");
+        ImGui.TextDisabled("Optional after bot setup. Keep it during migration so PartyPing can remove older webhook-owned cards.");
 
         if (ImGui.Button("Send test Discord notification"))
             _ = plugin.SendTestAsync();
@@ -130,7 +139,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.Spacing();
         DrawSectionHeader("Important");
-        ImGui.TextWrapped("PartyPing now uses only data received directly from the FFXIV Party Finder. Automatic polling currently requests the High-End Duty category only and pauses while you are inside a duty, zoning, or in a cutscene.");
+        ImGui.TextWrapped("PartyPing uses only data received directly from the FFXIV Party Finder. Automatic polling currently requests the High-End Duty category only and pauses while you are inside a duty, zoning, or in a cutscene.");
+        ImGui.TextWrapped("Interactive Discord buttons require the bot token, channel ID, and your user ID. If those are incomplete, PartyPing falls back to the legacy incoming webhook when one is configured.");
     }
 
     private async Task ClearDiscordMessagesAsync()
@@ -176,6 +186,16 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         var value = current;
         if (ImGui.InputText(label, ref value, maxLength))
+        {
+            setter(value);
+            Config.Save();
+        }
+    }
+
+    private void EditSecret(string label, string current, Action<string> setter, int maxLength)
+    {
+        var value = current;
+        if (ImGui.InputText(label, ref value, maxLength, ImGuiInputTextFlags.Password))
         {
             setter(value);
             Config.Save();
