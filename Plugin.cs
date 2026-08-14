@@ -23,12 +23,13 @@ public sealed partial class Plugin : IDalamudPlugin
     public Configuration Configuration { get; }
     internal string LastStatus { get; private set; } = "Idle";
     internal string PartyFillStatus { get; private set; } = "Party fill: not in a party";
+    internal string DiscordBotStatus => discordBotBridge.Status;
 
     private readonly WindowSystem windowSystem = new("PartyPing");
     private readonly ConfigWindow configWindow;
     private readonly SmsSender smsSender = new();
     private readonly CancellationTokenSource cancellation = new();
-    private readonly LocalPfLinkServer localPfLinkServer;
+    private readonly DiscordBotBridge discordBotBridge;
 
     private Dictionary<string, PersistedPfAlert> activePfAlerts => Configuration.ActivePfAlerts;
 
@@ -42,17 +43,12 @@ public sealed partial class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.ActivePfAlerts ??= [];
         Configuration.TrackedDiscordMessageIds ??= [];
+        Configuration.DiscordBotToken ??= string.Empty;
+        Configuration.DiscordChannelId ??= string.Empty;
+        Configuration.DiscordUserId ??= string.Empty;
 
-        localPfLinkServer = new LocalPfLinkServer(OpenLocalPfListingFromDiscordAsync);
-        try
-        {
-            localPfLinkServer.Start();
-            Log.Information("PartyPing localhost PF link server listening on 127.0.0.1:{Port}", localPfLinkServer.Port);
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "PartyPing could not start its localhost PF link server; Discord open links will be unavailable");
-        }
+        discordBotBridge = new DiscordBotBridge(OpenLocalPfListingFromDiscordAsync);
+        discordBotBridge.EnsureRunning(Configuration);
 
         configWindow = new ConfigWindow(this);
         windowSystem.AddWindow(configWindow);
@@ -80,7 +76,7 @@ public sealed partial class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandName);
 
         cancellation.Cancel();
-        localPfLinkServer.Dispose();
+        discordBotBridge.Dispose();
         smsSender.Dispose();
         cancellation.Dispose();
         windowSystem.RemoveAllWindows();
@@ -143,6 +139,7 @@ public sealed partial class Plugin : IDalamudPlugin
             return;
 
         lastPartyCheckUtc = now;
+        discordBotBridge.EnsureRunning(Configuration);
 
         try
         {
