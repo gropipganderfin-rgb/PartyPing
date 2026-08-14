@@ -1,46 +1,49 @@
 # PartyPing
 
-PartyPing is a Dalamud API 15 plugin that sends Discord notifications when Party Finder listings match your configured duty/prog filters.
+PartyPing is a Dalamud plugin that sends Discord notifications when local FFXIV Party Finder listings match your configured duty/prog filters.
 
-PartyPing can monitor two sources:
+PartyPing now uses only Party Finder data received directly by your FFXIV client. It does not use XIVPF.com or any external Party Finder website.
 
-- Party Finder listings received directly by your FFXIV client.
-- `xivpf.com/listings` in the background, so you do not have to keep opening or refreshing Party Finder yourself.
-
-FFXIV/Dalamud must still be running because PartyPing is an in-game plugin.
+FFXIV/Dalamud must be running because PartyPing is an in-game plugin.
 
 ## What it matches
 
-- Optional exact Duty ID for in-game listings
 - Duty-name substring
 - Include keywords (ANY or ALL)
 - Exclude keywords
 - Required open role: Any, Tank, Healer, Melee, Physical Ranged, Caster, or Any DPS
 - Minimum open slots
-- Per-listing deduplication/cooldown
+- North American worlds only
 
-## XIVPF background monitoring
+Role availability comes from FFXIV's actual accepted-job data for each open Party Finder slot.
 
-Enable `Monitor xivpf.com automatically` in `/partyping`.
+## Local Party Finder polling
 
-The default polling interval is 90 seconds and the plugin enforces a minimum interval of 60 seconds.
+PartyPing automatically requests the High-End Duty Party Finder category directly from FFXIV.
 
-For XIVPF monitoring, set `Duty name contains` because the public listings page exposes the duty name rather than PartyPing's in-game Duty ID. Keyword filters and minimum-open-slot filtering are applied to XIVPF matches too.
+After each polling cycle, it chooses a new random whole-number interval from 30 through 60 seconds before the next check. You do not need to keep the Party Finder window open.
 
-Structured job/role restrictions are available directly from Dalamud for listings received in-game. The XIVPF HTML page does not expose the same structured Dalamud slot objects, so a selected role is marked as **not verified** on XIVPF-only alerts rather than pretending the role match is exact.
+You can also use `Check local PF now` in `/partyping` for an immediate refresh.
 
-XIVPF is crowdsourced, so its listing data may lag behind the in-game Party Finder or briefly contain a listing that has already changed/closed.
+For every matching listing, PartyPing tracks its Discord message and keeps it synchronized:
+
+- New matching listing: creates a Discord post.
+- Party count, description, or other displayed information changes: edits the existing post.
+- Description no longer matches your include/exclude rules: deletes the post.
+- Selected role is no longer open: deletes the post.
+- Minimum open slots is no longer met: deletes the post.
+- Listing fills or closes: deletes the post when the local scan can determine it safely.
+
+Automatic local checks pause while you are inside a duty, zoning, or in a cutscene.
 
 ## Example Dancing Mad setup
 
-- Duty ID: `1094`
 - Duty name contains: `Dancing Mad`
 - Include keywords: `p3, bh, enrage`
 - Require ALL: off
 - Exclude keywords: `fresh`
 - Required open role: `Tank`
-- Monitor xivpf.com automatically: on
-- XIVPF poll interval: `90`
+- Minimum open slots: `1`
 
 ## Install
 
