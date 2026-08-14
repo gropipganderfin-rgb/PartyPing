@@ -1,0 +1,83 @@
+name: Apply PartyPing Open-Slot Role Fix
+
+on:
+  push:
+    branches:
+      - role-open-slot-fix
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: role-open-slot-fix
+          fetch-depth: 0
+
+      - name: Apply open-slot role fix
+        shell: pwsh
+        run: |
+          $path = "LocalPfScanner.cs"
+          $content = (Get-Content $path -Raw) -replace "`r`n", "`n"
+          $old = @'
+            var acceptedJobs = listing.Slots
+                .SelectMany(slot => slot.Accepting)
+                .Distinct()
+                .ToArray();
+'@ -replace "`r`n", "`n"
+          $new = @'
+            // PartyFinder exposes one slot entry per party seat, including already-filled
+            // seats and padding. Only the seats after SlotsFilled, up to the remaining
+            // open-seat count, represent jobs that can actually join right now.
+            var openSlotCount = Math.Max(0, listing.SlotsAvailable - listing.SlotsFilled);
+            var acceptedJobs = listing.Slots
+                .Skip(listing.SlotsFilled)
+                .Take(openSlotCount)
+                .SelectMany(slot => slot.Accepting)
+                .Distinct()
+                .ToArray();
+'@ -replace "`r`n", "`n"
+          if (-not $content.Contains($old)) {
+            throw "Expected acceptedJobs block was not found exactly once."
+          }
+          $updated = $content.Replace($old, $new)
+          if ($updated -eq $content) {
+            throw "Role-filter source replacement did not change LocalPfScanner.cs."
+          }
+          [System.IO.File]::WriteAllText($path, $updated, [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText("version.txt", "0.7.3.0`n", [System.Text.UTF8Encoding]::new($false))
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          architecture: x64
+
+      - name: Install Dalamud build files
+        shell: pwsh
+        run: |
+          $dalamudPath = Join-Path $env:APPDATA "XIVLauncher\addon\Hooks\dev"
+          $dalamudZip = Join-Path $env:RUNNER_TEMP "dalamud.zip"
+          New-Item -ItemType Directory -Force -Path $dalamudPath | Out-Null
+          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile $dalamudZip
+          Expand-Archive -Path $dalamudZip -DestinationPath $dalamudPath -Force
+
+      - name: Restore
+        run: dotnet restore .\PartyPing.csproj
+
+      - name: Build
+        run: dotnet build .\PartyPing.csproj -c Release -p:Platform=x64 --no-restore
+
+      - name: Commit verified fix
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add LocalPfScanner.cs version.txt
+          git commit -m "Fix role filtering to inspect only open PF slots"
+          git push origin HEAD:role-open-slot-fix
