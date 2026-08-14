@@ -142,11 +142,11 @@ public sealed partial class Plugin
                 unsafe
                 {
                     var agent = AgentLookingForGroup.Instance();
-                    if (agent is null)
+                    if (agent == null)
                         return false;
 
                     var addon = GameGui.GetAddonByName<AtkUnitBase>("LookingForGroup", 1);
-                    if (addon is not null && addon->IsVisible)
+                    if (addon != null && addon->IsVisible)
                         return false;
 
                     agent->Show();
