@@ -2,15 +2,15 @@ name: Apply PartyPing Open-Slot Role Fix
 
 on:
   push:
-    branches:
-      - role-open-slot-fix
+    branches: [role-open-slot-fix]
+    paths:
+      - .github/workflows/apply-role-slot-fix.yml
 
 permissions:
   contents: write
 
 jobs:
   patch-build-commit:
-    if: github.actor != 'github-actions[bot]'
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -24,31 +24,10 @@ jobs:
         run: |
           $path = "LocalPfScanner.cs"
           $content = (Get-Content $path -Raw) -replace "`r`n", "`n"
-          $old = @'
-            var acceptedJobs = listing.Slots
-                .SelectMany(slot => slot.Accepting)
-                .Distinct()
-                .ToArray();
-'@ -replace "`r`n", "`n"
-          $new = @'
-            // PartyFinder exposes one slot entry per party seat, including already-filled
-            // seats and padding. Only the seats after SlotsFilled, up to the remaining
-            // open-seat count, represent jobs that can actually join right now.
-            var openSlotCount = Math.Max(0, listing.SlotsAvailable - listing.SlotsFilled);
-            var acceptedJobs = listing.Slots
-                .Skip(listing.SlotsFilled)
-                .Take(openSlotCount)
-                .SelectMany(slot => slot.Accepting)
-                .Distinct()
-                .ToArray();
-'@ -replace "`r`n", "`n"
-          if (-not $content.Contains($old)) {
-            throw "Expected acceptedJobs block was not found exactly once."
-          }
+          $old = "            var acceptedJobs = listing.Slots`n                .SelectMany(slot => slot.Accepting)`n                .Distinct()`n                .ToArray();"
+          $new = "            // Only inspect seats that are currently open. Filled seats and padding must not count toward role availability.`n            var openSlotCount = Math.Max(0, listing.SlotsAvailable - listing.SlotsFilled);`n            var acceptedJobs = listing.Slots`n                .Skip(listing.SlotsFilled)`n                .Take(openSlotCount)`n                .SelectMany(slot => slot.Accepting)`n                .Distinct()`n                .ToArray();"
+          if (-not $content.Contains($old)) { throw "Expected acceptedJobs block was not found." }
           $updated = $content.Replace($old, $new)
-          if ($updated -eq $content) {
-            throw "Role-filter source replacement did not change LocalPfScanner.cs."
-          }
           [System.IO.File]::WriteAllText($path, $updated, [System.Text.UTF8Encoding]::new($false))
           [System.IO.File]::WriteAllText("version.txt", "0.7.3.0`n", [System.Text.UTF8Encoding]::new($false))
 
