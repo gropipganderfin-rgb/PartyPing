@@ -9,6 +9,7 @@ internal sealed class DiscordBotBridge : IDisposable
 {
     private const string DiscordApiBase = "https://discord.com/api/v10";
     private const string OpenButtonPrefix = "partyping_open:";
+    private const string JoinButtonPrefix = "partyping_join:";
     private const int GuildsIntent = 1;
 
     private readonly Func<ulong, CancellationToken, Task<bool>> openListing;
@@ -88,10 +89,6 @@ internal sealed class DiscordBotBridge : IDisposable
                 var interactionEndpoint = await GetInteractionsEndpointUrlAsync(token, cancellationToken).ConfigureAwait(false);
                 if (!string.IsNullOrWhiteSpace(interactionEndpoint))
                 {
-                    // Discord interaction delivery is mutually exclusive: an app with
-                    // an Interactions Endpoint URL will not send button clicks over the
-                    // Gateway. PartyPing intentionally uses the Gateway so no public
-                    // web server or browser handoff is required.
                     Status = "Discord bot: remove the Interactions Endpoint URL in Developer Portal > General Information";
                 }
                 else
@@ -197,7 +194,7 @@ internal sealed class DiscordBotBridge : IDisposable
 
                 if (string.Equals(eventName, "READY", StringComparison.Ordinal))
                 {
-                    Status = "Discord bot: connected - Open in FFXIV buttons ready";
+                    Status = "Discord bot: connected - Open / Join Party buttons ready";
                     continue;
                 }
 
@@ -207,8 +204,6 @@ internal sealed class DiscordBotBridge : IDisposable
                     continue;
                 }
 
-                // Process the interaction inline until Discord has been ACKed. This
-                // avoids scheduling delay before Discord's three-second response limit.
                 await HandleInteractionAsync(
                     interaction.Clone(),
                     channelId,
@@ -247,13 +242,17 @@ internal sealed class DiscordBotBridge : IDisposable
             }
 
             var customId = customIdElement.GetString();
-            if (string.IsNullOrWhiteSpace(customId) ||
-                !customId.StartsWith(OpenButtonPrefix, StringComparison.Ordinal))
-            {
+            if (string.IsNullOrWhiteSpace(customId))
                 return;
-            }
 
-            Status = "Discord bot: Open in FFXIV button received...";
+            var isJoin = customId.StartsWith(JoinButtonPrefix, StringComparison.Ordinal);
+            var isOpen = customId.StartsWith(OpenButtonPrefix, StringComparison.Ordinal);
+            if (!isJoin && !isOpen)
+                return;
+
+            Status = isJoin
+                ? "Discord bot: Join Party button received..."
+                : "Discord bot: Open in FFXIV button received...";
 
             if (!interaction.TryGetProperty("id", out var interactionIdElement) ||
                 !interaction.TryGetProperty("token", out var interactionTokenElement))
@@ -287,7 +286,8 @@ internal sealed class DiscordBotBridge : IDisposable
                 return;
             }
 
-            if (!ulong.TryParse(customId[OpenButtonPrefix.Length..], out var listingId) || listingId == 0)
+            var prefix = isJoin ? JoinButtonPrefix : OpenButtonPrefix;
+            if (!ulong.TryParse(customId[prefix.Length..], out var listingId) || listingId == 0)
             {
                 await RespondEphemeralAsync(
                     interactionId,
@@ -298,15 +298,22 @@ internal sealed class DiscordBotBridge : IDisposable
                 return;
             }
 
-            // ACK first. Discord requires the initial response within three seconds.
             await RespondAsync(
                 interactionId,
                 interactionToken,
                 new { type = 6 },
                 cancellationToken).ConfigureAwait(false);
 
-            Status = "Discord bot: button acknowledged - opening PF listing " + listingId;
-            _ = OpenListingAfterAcknowledgementAsync(listingId, cancellationToken);
+            if (isJoin)
+            {
+                Status = "Discord bot: button acknowledged - joining PF listing " + listingId;
+                _ = JoinListingAfterAcknowledgementAsync(listingId, cancellationToken);
+            }
+            else
+            {
+                Status = "Discord bot: button acknowledged - opening PF listing " + listingId;
+                _ = OpenListingAfterAcknowledgementAsync(listingId, cancellationToken);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -334,6 +341,31 @@ internal sealed class DiscordBotBridge : IDisposable
         {
             Status = "Discord bot: FFXIV open failed - " + ex.Message;
             Plugin.Log.Warning(ex, "PartyPing could not open PF listing {ListingId} after Discord acknowledgement", listingId);
+        }
+    }
+
+    private async Task JoinListingAfterAcknowledgementAsync(ulong listingId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!await openListing(listingId, cancellationToken).ConfigureAwait(false))
+            {
+                Status = "Discord bot: connected - FFXIV could not open PF listing " + listingId + " for joining";
+                return;
+            }
+
+            var joinActionSent = await PartyJoiner.JoinOpenedListingAsync(listingId, cancellationToken).ConfigureAwait(false);
+            Status = joinActionSent
+                ? "Discord bot: connected - Join Party action sent for PF listing " + listingId
+                : "Discord bot: connected - FFXIV could not join PF listing " + listingId;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Status = "Discord bot: FFXIV join failed - " + ex.Message;
+            Plugin.Log.Warning(ex, "PartyPing could not join PF listing {ListingId} after Discord acknowledgement", listingId);
         }
     }
 
