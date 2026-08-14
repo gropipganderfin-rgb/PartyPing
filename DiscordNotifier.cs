@@ -16,6 +16,7 @@ internal sealed class DiscordNotifier : IDisposable
     private const string DiscordApiBase = "https://discord.com/api/v10";
     private const int PartyFinderEmbedColor = 0x5865F2;
     private const string OpenButtonPrefix = "partyping_open:";
+    private const string JoinButtonPrefix = "partyping_join:";
 
     private readonly HttpClient http = new();
 
@@ -66,9 +67,6 @@ internal sealed class DiscordNotifier : IDisposable
         if (string.Equals(transportHint, "webhook", StringComparison.OrdinalIgnoreCase))
             return await EditWebhookAsync(config, messageId, body, cancellationToken).ConfigureAwait(false);
 
-        // Older PartyPing versions did not persist which Discord transport owned a
-        // message. When bot mode is configured, try the bot channel first and fall
-        // back to the old webhook on 404 so those messages remain manageable.
         if (HasBotTransport(config))
         {
             var bot = await EditBotAsync(config, messageId, body, cancellationToken).ConfigureAwait(false);
@@ -306,6 +304,13 @@ internal sealed class DiscordNotifier : IDisposable
                                 style = 1,
                                 label = "Open in FFXIV",
                                 custom_id = OpenButtonPrefix + pf.ListingId,
+                            },
+                            new
+                            {
+                                type = 2,
+                                style = 3,
+                                label = "Join Party",
+                                custom_id = JoinButtonPrefix + pf.ListingId,
                             },
                         },
                     },
