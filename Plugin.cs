@@ -28,18 +28,19 @@ public sealed partial class Plugin : IDalamudPlugin
     private readonly SmsSender smsSender = new();
     private readonly CancellationTokenSource cancellation = new();
 
-    private readonly Dictionary<string, ActivePfAlert> activePfAlerts = new(StringComparer.Ordinal);
+    private Dictionary<string, PersistedPfAlert> activePfAlerts => Configuration.ActivePfAlerts;
 
     private long trackedPartyId;
     private int lastPartySize;
     private bool partyFullNotificationSent;
     private DateTime lastPartyCheckUtc = DateTime.MinValue;
 
-    private sealed record ActivePfAlert(string MessageId, string LastContent);
-
     public Plugin()
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        Configuration.ActivePfAlerts ??= [];
+        Configuration.TrackedDiscordMessageIds ??= [];
+
         configWindow = new ConfigWindow(this);
         windowSystem.AddWindow(configWindow);
 
@@ -86,6 +87,7 @@ public sealed partial class Plugin : IDalamudPlugin
     internal void ResetPfAlertStateAfterManualClear()
     {
         activePfAlerts.Clear();
+        Configuration.Save();
         LocalPfStatus = "Local PF: cleared - matching listings will repopulate on the next poll";
         Log.Information("PartyPing manual clear reset local PF alert state");
     }
