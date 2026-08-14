@@ -19,6 +19,7 @@ internal sealed class DiscordNotifier : IDisposable
         string Role,
         string World,
         string Recruiter,
+        string OpenInFfxiv,
         string Description);
 
     public async Task<string> SendAsync(Configuration config, string body, CancellationToken cancellationToken)
@@ -127,6 +128,7 @@ internal sealed class DiscordNotifier : IDisposable
                     new { name = "Role", value = pf.Role, inline = true },
                     new { name = "World", value = pf.World, inline = true },
                     new { name = "Recruiter", value = pf.Recruiter, inline = true },
+                    new { name = "Open in FFXIV", value = pf.OpenInFfxiv, inline = false },
                 },
                 footer = new
                 {
@@ -190,6 +192,7 @@ internal sealed class DiscordNotifier : IDisposable
         var role = FindField(lines, "**Role filter:**");
         var world = FindField(lines, "**World:**");
         var recruiter = FindField(lines, "**Recruiter:**");
+        var openInFfxiv = FindField(lines, "**Open in FFXIV:**");
 
         var descriptionIndex = Array.FindIndex(lines, x => x.Equals("### Party Finder Description", StringComparison.Ordinal));
         var description = descriptionIndex >= 0
@@ -208,6 +211,7 @@ internal sealed class DiscordNotifier : IDisposable
             Trim(role, 1024),
             Trim(world, 1024),
             Trim(recruiter, 1024),
+            Trim(openInFfxiv, 1024),
             Trim(description, 4096));
         return true;
     }
