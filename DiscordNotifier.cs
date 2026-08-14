@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace PartyPing;
 
-internal sealed record DiscordSendResult(string Status, string MessageId);
+internal sealed record DiscordSendResult(string Status, string MessageId, string? SeparatorMessageId = null);
 
 internal sealed class DiscordNotifier : IDisposable
 {
