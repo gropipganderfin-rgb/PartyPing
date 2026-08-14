@@ -2,7 +2,7 @@
   "Author": "PartyPing",
   "Name": "PartyPing",
   "Punchline": "Discord alerts when Party Finder hits my prog point.",
-  "Description": "Polls the in-game FFXIV Party Finder, filters by duty, prog keywords, open slots, and exact local role availability, then creates, edits, or removes Discord cards as listings change. Optional Discord bot mode adds a native Open in FFXIV button with no browser handoff. Use /partyping to configure it.",
+  "Description": "Polls the in-game FFXIV Party Finder, filters by duty, prog keywords, open slots, exact local role availability, and ignores listings locked to minimum item level 999, then creates, edits, or removes Discord cards as listings change. Optional Discord bot mode adds native Open in FFXIV and Join Party buttons with no browser handoff. Use /partyping to configure it.",
   "ApplicableVersion": "any",
   "Tags": [
     "party finder",
