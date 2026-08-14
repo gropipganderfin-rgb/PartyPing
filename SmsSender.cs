@@ -2,7 +2,10 @@ namespace PartyPing;
 
 internal sealed class SmsSender : IDisposable
 {
+    private const string PfSeparator = "\u200B\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\u200B";
+
     private readonly DiscordNotifier discord = new();
+    private readonly Dictionary<string, string> separatorByMessageId = new(StringComparer.Ordinal);
 
     public async Task<string> SendAsync(Configuration config, string body, CancellationToken cancellationToken)
     {
@@ -16,6 +19,25 @@ internal sealed class SmsSender : IDisposable
         var message = PrepareMessage(body);
         var result = await discord.SendTrackedAsync(config, message, cancellationToken).ConfigureAwait(false);
         DiscordMessageStore.Add(config, result.MessageId);
+
+        if (IsPartyFinderMessage(message))
+        {
+            try
+            {
+                var separator = await discord.SendTrackedAsync(config, PfSeparator, cancellationToken).ConfigureAwait(false);
+                DiscordMessageStore.Add(config, separator.MessageId);
+                separatorByMessageId[result.MessageId] = separator.MessageId;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Warning(ex, "PartyPing sent a PF alert but could not add its Discord separator");
+            }
+        }
+
         return result;
     }
 
@@ -31,8 +53,19 @@ internal sealed class SmsSender : IDisposable
         EnsureDiscordUrl(config);
         var result = await discord.DeleteAsync(config, messageId, cancellationToken).ConfigureAwait(false);
         DiscordMessageStore.Remove(config, messageId);
+
+        if (separatorByMessageId.TryGetValue(messageId, out var separatorMessageId))
+        {
+            await discord.DeleteAsync(config, separatorMessageId, cancellationToken).ConfigureAwait(false);
+            DiscordMessageStore.Remove(config, separatorMessageId);
+            separatorByMessageId.Remove(messageId);
+        }
+
         return result;
     }
+
+    private static bool IsPartyFinderMessage(string body) =>
+        body.Contains("**Source:** Local FFXIV Party Finder", StringComparison.Ordinal);
 
     private static string PrepareMessage(string body) =>
         body.Replace("SMS alerts", "Discord notifications", StringComparison.OrdinalIgnoreCase).TrimEnd();
