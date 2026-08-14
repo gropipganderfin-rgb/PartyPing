@@ -35,7 +35,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private bool partyFullNotificationSent;
     private DateTime lastPartyCheckUtc = DateTime.MinValue;
 
-    private sealed record ActivePfAlert(string MessageId, string? SeparatorMessageId, string LastContent);
+    private sealed record ActivePfAlert(string MessageId, string LastContent);
 
     public Plugin()
     {
