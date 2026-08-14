@@ -32,7 +32,7 @@ public sealed partial class Plugin
                 }
                 else if (string.IsNullOrWhiteSpace(Configuration.DutyNameContains))
                 {
-                    LocalPfStatus = $"Local PF: enter a Duty name contains value - next check attempt in {delaySeconds}s";
+                    LocalPfStatus = $"Local PF: duty filter blank - tracked PF posts will be cleaned on the next cycle in {delaySeconds}s";
                 }
                 else
                 {
@@ -41,9 +41,12 @@ public sealed partial class Plugin
 
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken).ConfigureAwait(false);
 
-                if (!Configuration.Enabled || string.IsNullOrWhiteSpace(Configuration.DutyNameContains))
+                if (!Configuration.Enabled)
                     continue;
 
+                // CheckLocalPfNowAsync also handles a blank duty filter by deleting
+                // tracked PF posts, so do not skip the call solely because the filter
+                // has been cleared.
                 await CheckLocalPfNowAsync().ConfigureAwait(false);
             }
         }
