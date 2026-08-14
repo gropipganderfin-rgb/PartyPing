@@ -191,7 +191,11 @@ public sealed partial class Plugin
             var recruiter = $"{recruiterName} @ {homeWorld}";
             var description = listing.Description.TextValue;
             var fingerprint = $"{duty}\u001f{recruiter}\u001f{currentWorld}";
+            // Only inspect seats that are currently open. Filled seats and padding must not count toward role availability.
+            var openSlotCount = Math.Max(0, listing.SlotsAvailable - listing.SlotsFilled);
             var acceptedJobs = listing.Slots
+                .Skip(listing.SlotsFilled)
+                .Take(openSlotCount)
                 .SelectMany(slot => slot.Accepting)
                 .Distinct()
                 .ToArray();
