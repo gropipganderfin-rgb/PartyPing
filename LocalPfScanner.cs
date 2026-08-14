@@ -29,7 +29,7 @@ public sealed partial class Plugin
 
     [PluginService] internal static IPartyFinderGui PartyFinderGui { get; private set; } = null!;
 
-    internal string LocalPfStatus { get; private set; } = "Local PF: ready for a manual check";
+    internal string LocalPfStatus { get; private set; } = "Local PF: ready for automatic polling";
     internal bool LocalPfCheckInProgress { get; private set; }
 
     private readonly object localPfSync = new();
@@ -169,7 +169,6 @@ public sealed partial class Plugin
     {
         var config = Configuration;
         var seenFingerprints = listings.Select(x => x.Fingerprint).ToHashSet(StringComparer.Ordinal);
-        var now = DateTimeOffset.UtcNow;
         var matchingCount = 0;
         var newCount = 0;
         var updatedCount = 0;
@@ -182,11 +181,11 @@ public sealed partial class Plugin
 
             var matches = MatchesLocalPfListing(listing, config);
 
-            if (activeXivPfAlerts.TryGetValue(listing.Fingerprint, out var activeAlert))
+            if (activePfAlerts.TryGetValue(listing.Fingerprint, out var activeAlert))
             {
                 if (!matches)
                 {
-                    if (await DeleteLocalPfAlertAsync(listing.Fingerprint, activeAlert, config, now, cancellationToken).ConfigureAwait(false))
+                    if (await DeleteLocalPfAlertAsync(listing.Fingerprint, activeAlert, config, cancellationToken).ConfigureAwait(false))
                         removedCount++;
                     continue;
                 }
@@ -196,11 +195,10 @@ public sealed partial class Plugin
                 if (!string.Equals(message, activeAlert.LastContent, StringComparison.Ordinal))
                 {
                     await smsSender.EditAsync(config, activeAlert.MessageId, message, cancellationToken).ConfigureAwait(false);
-                    activeXivPfAlerts[listing.Fingerprint] = activeAlert with { LastContent = message };
+                    activePfAlerts[listing.Fingerprint] = activeAlert with { LastContent = message };
                     updatedCount++;
                 }
 
-                notifiedXivPfListings[listing.Fingerprint] = now;
                 continue;
             }
 
@@ -210,8 +208,7 @@ public sealed partial class Plugin
             matchingCount++;
             var newMessage = BuildLocalPfMessage(listing, config.RequiredRole);
             var result = await smsSender.SendTrackedAsync(config, newMessage, cancellationToken).ConfigureAwait(false);
-            activeXivPfAlerts[listing.Fingerprint] = new ActiveXivPfAlert(result.MessageId, now, newMessage);
-            notifiedXivPfListings[listing.Fingerprint] = now;
+            activePfAlerts[listing.Fingerprint] = new ActivePfAlert(result.MessageId, newMessage);
             newCount++;
         }
 
@@ -224,12 +221,12 @@ public sealed partial class Plugin
         var completePage = listings.Count is > 0 and < LocalPfMaxListingsPerPage;
         if (completePage)
         {
-            foreach (var pair in activeXivPfAlerts.ToArray())
+            foreach (var pair in activePfAlerts.ToArray())
             {
                 if (seenFingerprints.Contains(pair.Key) || !FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
                     continue;
 
-                if (await DeleteLocalPfAlertAsync(pair.Key, pair.Value, config, now, cancellationToken).ConfigureAwait(false))
+                if (await DeleteLocalPfAlertAsync(pair.Key, pair.Value, config, cancellationToken).ConfigureAwait(false))
                     removedCount++;
             }
         }
@@ -263,20 +260,14 @@ public sealed partial class Plugin
 
     private async Task<bool> DeleteLocalPfAlertAsync(
         string fingerprint,
-        ActiveXivPfAlert activeAlert,
+        ActivePfAlert activeAlert,
         Configuration config,
-        DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         try
         {
             await smsSender.DeleteAsync(config, activeAlert.MessageId, cancellationToken).ConfigureAwait(false);
-            activeXivPfAlerts.Remove(fingerprint);
-
-            // Keep a fresh cooldown marker so a stale XIVPF copy of the same
-            // listing cannot immediately recreate a post that the local client
-            // just proved is no longer valid.
-            notifiedXivPfListings[fingerprint] = now;
+            activePfAlerts.Remove(fingerprint);
             return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
