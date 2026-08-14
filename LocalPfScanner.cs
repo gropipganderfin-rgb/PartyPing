@@ -47,6 +47,7 @@ public sealed partial class Plugin
         string World,
         string Fingerprint,
         JobFlags[] AcceptedJobs,
+        ushort MinimumItemLevel,
         long ExpiresAtUnixSeconds);
 
     internal async Task CheckLocalPfNowAsync()
@@ -213,6 +214,7 @@ public sealed partial class Plugin
                 currentWorld,
                 fingerprint,
                 acceptedJobs,
+                listing.MinimumItemLevel,
                 expiresAt);
 
             lock (localPfSync)
@@ -398,6 +400,9 @@ public sealed partial class Plugin
     private static bool MatchesLocalPfListing(LocalPfListingSnapshot listing, Configuration config)
     {
         if (!LocalPfNorthAmericanWorlds.Contains(listing.World))
+            return false;
+
+        if (listing.MinimumItemLevel == 999)
             return false;
 
         var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
