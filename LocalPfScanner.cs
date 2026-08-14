@@ -129,6 +129,33 @@ public sealed partial class Plugin
         return agent != null && agent->RequestCategoryListings(LocalPfHighEndDutyCategory);
     }
 
+    private async Task<bool> OpenLocalPfListingFromDiscordAsync(ulong listingId, CancellationToken cancellationToken)
+    {
+        if (listingId == 0 || !CanRequestLocalPf())
+            return false;
+
+        try
+        {
+            return await Framework.Run(() =>
+            {
+                unsafe
+                {
+                    var agent = AgentLookingForGroup.Instance();
+                    return agent != null && agent->OpenListing(listingId);
+                }
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "PartyPing could not open PF listing {ListingId} from a Discord link", listingId);
+            return false;
+        }
+    }
+
     private void OnLocalPfListingReceived(IPartyFinderListing listing, IPartyFinderListingEventArgs args)
     {
         if (!LocalPfCheckInProgress)
@@ -360,13 +387,17 @@ public sealed partial class Plugin
         return duty.Contains(dutyNameContains.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string BuildLocalPfMessage(LocalPfListingSnapshot listing, RoleFilter role)
+    private string BuildLocalPfMessage(LocalPfListingSnapshot listing, RoleFilter role)
     {
         var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
         var cleaned = CleanDescription(listing.Description);
         var roleText = role == RoleFilter.AnyRole
             ? "Any role"
             : $"{role.DisplayName()} - open (verified locally)";
+        var openUrl = localPfLinkServer.BuildOpenUrl(listing.ListingId);
+        var openText = openUrl is null
+            ? "Unavailable - PartyPing localhost handoff is not running"
+            : $"[▶ Open this listing]({openUrl})";
 
         return
             $"## {listing.Duty}\n" +
@@ -375,7 +406,8 @@ public sealed partial class Plugin
             $"**Open slots:** {openSlots}\n" +
             $"**Role filter:** {roleText}\n" +
             $"**World:** {listing.World}\n" +
-            $"**Recruiter:** {listing.Recruiter}\n\n" +
+            $"**Recruiter:** {listing.Recruiter}\n" +
+            $"**Open in FFXIV:** {openText}\n\n" +
             "### Party Finder Description\n" +
             $"> {cleaned}";
     }
