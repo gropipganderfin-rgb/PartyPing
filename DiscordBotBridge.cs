@@ -85,7 +85,19 @@ internal sealed class DiscordBotBridge : IDisposable
         {
             try
             {
-                await RunConnectionAsync(token, channelId, userId, cancellationToken).ConfigureAwait(false);
+                var interactionEndpoint = await GetInteractionsEndpointUrlAsync(token, cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(interactionEndpoint))
+                {
+                    // Discord interaction delivery is mutually exclusive: an app with
+                    // an Interactions Endpoint URL will not send button clicks over the
+                    // Gateway. PartyPing intentionally uses the Gateway so no public
+                    // web server or browser handoff is required.
+                    Status = "Discord bot: remove the Interactions Endpoint URL in Developer Portal > General Information";
+                }
+                else
+                {
+                    await RunConnectionAsync(token, channelId, userId, cancellationToken).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -119,16 +131,19 @@ internal sealed class DiscordBotBridge : IDisposable
 
         using var socket = new ClientWebSocket();
         using var sendLock = new SemaphoreSlim(1, 1);
-        await socket.ConnectAsync(new Uri(socketUrl), cancellationToken).ConfigureAwait(false);
+        using var connectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var connectionToken = connectionCancellation.Token;
+
+        await socket.ConnectAsync(new Uri(socketUrl), connectionToken).ConfigureAwait(false);
 
         long? sequence = null;
-        var heartbeatInterval = await WaitForHelloAsync(socket, cancellationToken).ConfigureAwait(false);
+        var heartbeatInterval = await WaitForHelloAsync(socket, connectionToken).ConfigureAwait(false);
         var heartbeatTask = HeartbeatLoopAsync(
             socket,
             sendLock,
             heartbeatInterval,
             () => sequence,
-            cancellationToken);
+            connectionToken);
 
         await SendJsonAsync(socket, sendLock, new
         {
@@ -144,13 +159,13 @@ internal sealed class DiscordBotBridge : IDisposable
                     device = "PartyPing",
                 },
             },
-        }, cancellationToken).ConfigureAwait(false);
+        }, connectionToken).ConfigureAwait(false);
 
         try
         {
-            while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
+            while (!connectionToken.IsCancellationRequested && socket.State == WebSocketState.Open)
             {
-                using var document = await ReceiveJsonAsync(socket, cancellationToken).ConfigureAwait(false);
+                using var document = await ReceiveJsonAsync(socket, connectionToken).ConfigureAwait(false);
                 var root = document.RootElement;
 
                 if (root.TryGetProperty("s", out var sequenceElement) &&
@@ -169,7 +184,7 @@ internal sealed class DiscordBotBridge : IDisposable
 
                 if (op == 1)
                 {
-                    await SendHeartbeatAsync(socket, sendLock, sequence, cancellationToken).ConfigureAwait(false);
+                    await SendHeartbeatAsync(socket, sendLock, sequence, connectionToken).ConfigureAwait(false);
                     continue;
                 }
 
@@ -192,18 +207,23 @@ internal sealed class DiscordBotBridge : IDisposable
                     continue;
                 }
 
-                _ = Task.Run(
-                    () => HandleInteractionAsync(interaction.Clone(), channelId, userId, cancellationToken),
-                    CancellationToken.None);
+                // Process the interaction inline until Discord has been ACKed. This
+                // avoids scheduling delay before Discord's three-second response limit.
+                await HandleInteractionAsync(
+                    interaction.Clone(),
+                    channelId,
+                    userId,
+                    connectionToken).ConfigureAwait(false);
             }
         }
         finally
         {
+            connectionCancellation.Cancel();
             try
             {
                 await heartbeatTask.ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
             }
         }
@@ -233,16 +253,22 @@ internal sealed class DiscordBotBridge : IDisposable
                 return;
             }
 
+            Status = "Discord bot: Open in FFXIV button received...";
+
             if (!interaction.TryGetProperty("id", out var interactionIdElement) ||
                 !interaction.TryGetProperty("token", out var interactionTokenElement))
             {
+                Status = "Discord bot: button payload was missing its interaction ID/token";
                 return;
             }
 
             var interactionId = interactionIdElement.GetString();
             var interactionToken = interactionTokenElement.GetString();
             if (string.IsNullOrWhiteSpace(interactionId) || string.IsNullOrWhiteSpace(interactionToken))
+            {
+                Status = "Discord bot: button payload contained an empty interaction ID/token";
                 return;
+            }
 
             var channelId = interaction.TryGetProperty("channel_id", out var channelElement)
                 ? channelElement.GetString()
@@ -257,6 +283,7 @@ internal sealed class DiscordBotBridge : IDisposable
                     interactionToken,
                     "This PartyPing button is restricted to its configured owner and channel.",
                     cancellationToken).ConfigureAwait(false);
+                Status = "Discord bot: rejected a button click from a different user/channel";
                 return;
             }
 
@@ -267,17 +294,34 @@ internal sealed class DiscordBotBridge : IDisposable
                     interactionToken,
                     "This Party Finder listing ID is invalid.",
                     cancellationToken).ConfigureAwait(false);
+                Status = "Discord bot: button contained an invalid PF listing ID";
                 return;
             }
 
-            // Acknowledge immediately so Discord never needs to open a browser or
-            // show an interaction timeout while the FFXIV framework handles the UI.
+            // ACK first. Discord requires the initial response within three seconds.
             await RespondAsync(
                 interactionId,
                 interactionToken,
                 new { type = 6 },
                 cancellationToken).ConfigureAwait(false);
 
+            Status = "Discord bot: button acknowledged - opening PF listing " + listingId;
+            _ = OpenListingAfterAcknowledgementAsync(listingId, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Status = "Discord bot: button failed - " + ex.Message;
+            Plugin.Log.Warning(ex, "PartyPing could not process a Discord PF button interaction");
+        }
+    }
+
+    private async Task OpenListingAfterAcknowledgementAsync(ulong listingId, CancellationToken cancellationToken)
+    {
+        try
+        {
             var opened = await openListing(listingId, cancellationToken).ConfigureAwait(false);
             Status = opened
                 ? "Discord bot: connected - last button opened PF listing " + listingId
@@ -288,8 +332,29 @@ internal sealed class DiscordBotBridge : IDisposable
         }
         catch (Exception ex)
         {
-            Plugin.Log.Warning(ex, "PartyPing could not process a Discord PF button interaction");
+            Status = "Discord bot: FFXIV open failed - " + ex.Message;
+            Plugin.Log.Warning(ex, "PartyPing could not open PF listing {ListingId} after Discord acknowledgement", listingId);
         }
+    }
+
+    private async Task<string?> GetInteractionsEndpointUrlAsync(string token, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, DiscordApiBase + "/applications/@me");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bot", token);
+
+        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Discord application check returned {(int)response.StatusCode}.");
+
+        using var json = JsonDocument.Parse(body);
+        if (!json.RootElement.TryGetProperty("interactions_endpoint_url", out var endpointElement) ||
+            endpointElement.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        return endpointElement.GetString();
     }
 
     private async Task<string> GetGatewayUrlAsync(string token, CancellationToken cancellationToken)
@@ -435,7 +500,10 @@ internal sealed class DiscordBotBridge : IDisposable
 
         using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Discord interaction response returned {(int)response.StatusCode}.");
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException($"Discord interaction response returned {(int)response.StatusCode}: {Trim(body, 180)}");
+        }
     }
 
     private static string? GetInteractionUserId(JsonElement interaction)
@@ -455,6 +523,9 @@ internal sealed class DiscordBotBridge : IDisposable
 
         return null;
     }
+
+    private static string Trim(string value, int max) =>
+        value.Length <= max ? value : value[..max] + "...";
 
     private static string BuildConfigurationKey(string token, string channelId, string userId)
     {
