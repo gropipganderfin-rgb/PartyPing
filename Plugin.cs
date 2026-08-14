@@ -27,6 +27,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private readonly ConfigWindow configWindow;
     private readonly SmsSender smsSender = new();
     private readonly CancellationTokenSource cancellation = new();
+    private readonly LocalPfLinkServer localPfLinkServer;
 
     private Dictionary<string, PersistedPfAlert> activePfAlerts => Configuration.ActivePfAlerts;
 
@@ -40,6 +41,17 @@ public sealed partial class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.ActivePfAlerts ??= [];
         Configuration.TrackedDiscordMessageIds ??= [];
+
+        localPfLinkServer = new LocalPfLinkServer(OpenLocalPfListingFromDiscordAsync);
+        try
+        {
+            localPfLinkServer.Start();
+            Log.Information("PartyPing localhost PF link server listening on 127.0.0.1:{Port}", localPfLinkServer.Port);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "PartyPing could not start its localhost PF link server; Discord open links will be unavailable");
+        }
 
         configWindow = new ConfigWindow(this);
         windowSystem.AddWindow(configWindow);
@@ -67,6 +79,7 @@ public sealed partial class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandName);
 
         cancellation.Cancel();
+        localPfLinkServer.Dispose();
         smsSender.Dispose();
         cancellation.Dispose();
         windowSystem.RemoveAllWindows();
