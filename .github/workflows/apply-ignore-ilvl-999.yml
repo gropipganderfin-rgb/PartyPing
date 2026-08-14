@@ -1,0 +1,77 @@
+name: Apply PartyPing iLvl 999 Filter
+
+on:
+  push:
+    branches: [ignore-ilvl-999]
+    paths:
+      - .github/workflows/apply-ignore-ilvl-999.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-commit:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ignore-ilvl-999
+          fetch-depth: 0
+
+      - name: Apply iLvl 999 filter
+        shell: pwsh
+        run: |
+          $path = "LocalPfScanner.cs"
+          $content = (Get-Content $path -Raw) -replace "`r`n", "`n"
+
+          $oldRecord = "        JobFlags[] AcceptedJobs,`n        long ExpiresAtUnixSeconds);"
+          $newRecord = "        JobFlags[] AcceptedJobs,`n        ushort MinimumItemLevel,`n        long ExpiresAtUnixSeconds);"
+
+          $oldSnapshot = "                acceptedJobs,`n                expiresAt);"
+          $newSnapshot = "                acceptedJobs,`n                listing.MinimumItemLevel,`n                expiresAt);"
+
+          $oldMatch = "        if (!LocalPfNorthAmericanWorlds.Contains(listing.World))`n            return false;`n`n        var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);"
+          $newMatch = "        if (!LocalPfNorthAmericanWorlds.Contains(listing.World))`n            return false;`n`n        if (listing.MinimumItemLevel == 999)`n            return false;`n`n        var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);"
+
+          foreach ($pair in @(
+            @($oldRecord, $newRecord),
+            @($oldSnapshot, $newSnapshot),
+            @($oldMatch, $newMatch)
+          )) {
+            if (-not $content.Contains($pair[0])) { throw "Expected LocalPfScanner block was not found." }
+            $content = $content.Replace($pair[0], $pair[1])
+          }
+
+          [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText("version.txt", "0.7.5.0`n", [System.Text.UTF8Encoding]::new($false))
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          architecture: x64
+
+      - name: Install Dalamud build files
+        shell: pwsh
+        run: |
+          $dalamudPath = Join-Path $env:APPDATA "XIVLauncher\addon\Hooks\dev"
+          $dalamudZip = Join-Path $env:RUNNER_TEMP "dalamud.zip"
+          New-Item -ItemType Directory -Force -Path $dalamudPath | Out-Null
+          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile $dalamudZip
+          Expand-Archive -Path $dalamudZip -DestinationPath $dalamudPath -Force
+
+      - name: Restore
+        run: dotnet restore .\PartyPing.csproj
+
+      - name: Build
+        run: dotnet build .\PartyPing.csproj -c Release -p:Platform=x64 --no-restore
+
+      - name: Commit verified filter
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add LocalPfScanner.cs version.txt
+          git commit -m "Ignore PF listings locked to item level 999"
+          git push origin HEAD:ignore-ilvl-999
