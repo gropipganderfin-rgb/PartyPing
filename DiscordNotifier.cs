@@ -9,27 +9,9 @@ internal sealed record DiscordSendResult(string Status, string MessageId);
 internal sealed class DiscordNotifier : IDisposable
 {
     private readonly HttpClient http = new();
-    private string? lastPfMessageId;
 
     public async Task<string> SendAsync(Configuration config, string body, CancellationToken cancellationToken)
     {
-        if (body.StartsWith("## Party Filled", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(lastPfMessageId))
-        {
-            try
-            {
-                await DeleteAsync(config, lastPfMessageId, cancellationToken).ConfigureAwait(false);
-                lastPfMessageId = null;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch
-            {
-                // Keep sending the party-filled notification even if cleanup fails.
-            }
-        }
-
         var result = await SendTrackedAsync(config, body, cancellationToken).ConfigureAwait(false);
         return result.Status;
     }
@@ -38,7 +20,6 @@ internal sealed class DiscordNotifier : IDisposable
     {
         var webhookUrl = ValidateWebhookUrl(config.DiscordWebhookUrl);
         var executeUrl = WithWait(webhookUrl);
-
         var payload = CreatePayload(body, includeUsername: true);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, executeUrl)
@@ -59,10 +40,6 @@ internal sealed class DiscordNotifier : IDisposable
         var messageId = idElement.GetString();
         if (string.IsNullOrWhiteSpace(messageId))
             throw new InvalidOperationException("Discord returned an empty message ID.");
-
-        if (body.Contains("**Source:** In-game Party Finder", StringComparison.Ordinal) ||
-            body.Contains("**Source:** XIVPF.com", StringComparison.Ordinal))
-            lastPfMessageId = messageId;
 
         return new DiscordSendResult("Discord notification sent", messageId);
     }
