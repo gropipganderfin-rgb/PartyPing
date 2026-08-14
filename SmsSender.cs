@@ -12,24 +12,33 @@ internal sealed class SmsSender : IDisposable
 
     public async Task<DiscordSendResult> SendTrackedAsync(Configuration config, string body, CancellationToken cancellationToken)
     {
-        EnsureDiscordUrl(config);
+        EnsureLegacyDiscordUrl(config);
         var message = PrepareMessage(body);
         var result = await discord.SendTrackedAsync(config, message, cancellationToken).ConfigureAwait(false);
         DiscordMessageStore.Add(config, result.MessageId);
         return result;
     }
 
-    public async Task<string> EditAsync(Configuration config, string messageId, string body, CancellationToken cancellationToken)
+    public async Task<string> EditAsync(
+        Configuration config,
+        string messageId,
+        string body,
+        CancellationToken cancellationToken,
+        string? transportHint = null)
     {
-        EnsureDiscordUrl(config);
+        EnsureLegacyDiscordUrl(config);
         var message = PrepareMessage(body);
-        return await discord.EditAsync(config, messageId, message, cancellationToken).ConfigureAwait(false);
+        return await discord.EditAsync(config, messageId, message, cancellationToken, transportHint).ConfigureAwait(false);
     }
 
-    public async Task<string> DeleteAsync(Configuration config, string messageId, CancellationToken cancellationToken)
+    public async Task<string> DeleteAsync(
+        Configuration config,
+        string messageId,
+        CancellationToken cancellationToken,
+        string? transportHint = null)
     {
-        EnsureDiscordUrl(config);
-        var result = await discord.DeleteAsync(config, messageId, cancellationToken).ConfigureAwait(false);
+        EnsureLegacyDiscordUrl(config);
+        var result = await discord.DeleteAsync(config, messageId, cancellationToken, transportHint).ConfigureAwait(false);
         DiscordMessageStore.Remove(config, messageId);
         return result;
     }
@@ -37,10 +46,13 @@ internal sealed class SmsSender : IDisposable
     private static string PrepareMessage(string body) =>
         body.Replace("SMS alerts", "Discord notifications", StringComparison.OrdinalIgnoreCase).TrimEnd();
 
-    private static void EnsureDiscordUrl(Configuration config)
+    private static void EnsureLegacyDiscordUrl(Configuration config)
     {
-        if (string.IsNullOrWhiteSpace(config.DiscordWebhookUrl))
+        if (string.IsNullOrWhiteSpace(config.DiscordWebhookUrl) &&
+            !string.IsNullOrWhiteSpace(config.TwilioAccountSid))
+        {
             config.DiscordWebhookUrl = config.TwilioAccountSid;
+        }
     }
 
     public void Dispose() => discord.Dispose();
