@@ -10,6 +10,7 @@ public sealed partial class Plugin
 {
     private const byte LocalPfHighEndDutyCategory = 6;
     private const int LocalPfMaxListingsPerPage = 50;
+    private const int SaturatedPageMissesBeforeRemoval = 3;
     private static readonly TimeSpan LocalPfReceiveWindow = TimeSpan.FromMilliseconds(2500);
 
     private static readonly HashSet<string> LocalPfNorthAmericanWorlds = new(StringComparer.OrdinalIgnoreCase)
@@ -44,7 +45,8 @@ public sealed partial class Plugin
         string Recruiter,
         string World,
         string Fingerprint,
-        JobFlags[] AcceptedJobs);
+        JobFlags[] AcceptedJobs,
+        long ExpiresAtUnixSeconds);
 
     internal async Task CheckLocalPfNowAsync()
     {
@@ -59,7 +61,10 @@ public sealed partial class Plugin
 
         if (string.IsNullOrWhiteSpace(Configuration.DutyNameContains))
         {
-            LocalPfStatus = "Local PF: enter a Duty name contains value first";
+            if (activePfAlerts.Count > 0)
+                await RemoveAllLocalPfAlertsAsync(cancellation.Token).ConfigureAwait(false);
+
+            LocalPfStatus = "Local PF: duty filter is blank; tracked PF posts removed";
             return;
         }
 
@@ -142,6 +147,9 @@ public sealed partial class Plugin
                 .SelectMany(slot => slot.Accepting)
                 .Distinct()
                 .ToArray();
+            var expiresAt = DateTimeOffset.UtcNow
+                .AddSeconds(listing.SecondsRemaining)
+                .ToUnixTimeSeconds();
 
             var snapshot = new LocalPfListingSnapshot(
                 listing.Id,
@@ -152,7 +160,8 @@ public sealed partial class Plugin
                 recruiter,
                 currentWorld,
                 fingerprint,
-                acceptedJobs);
+                acceptedJobs,
+                expiresAt);
 
             lock (localPfSync)
                 localPfReceived[listing.Id] = snapshot;
@@ -173,6 +182,18 @@ public sealed partial class Plugin
         var newCount = 0;
         var updatedCount = 0;
         var removedCount = 0;
+        var stateChanged = false;
+
+        // If the configured duty changes, old-duty posts are no longer valid and
+        // should disappear immediately instead of waiting to show up in a scan.
+        foreach (var pair in activePfAlerts.ToArray())
+        {
+            if (FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
+                continue;
+
+            if (await DeleteLocalPfAlertAsync(pair.Key, pair.Value, config, cancellationToken).ConfigureAwait(false))
+                removedCount++;
+        }
 
         foreach (var listing in listings)
         {
@@ -191,11 +212,15 @@ public sealed partial class Plugin
                 }
 
                 matchingCount++;
+                activeAlert.MissedPolls = 0;
+                activeAlert.ExpiresAtUnixSeconds = listing.ExpiresAtUnixSeconds;
+                stateChanged = true;
+
                 var message = BuildLocalPfMessage(listing, config.RequiredRole);
                 if (!string.Equals(message, activeAlert.LastContent, StringComparison.Ordinal))
                 {
                     await smsSender.EditAsync(config, activeAlert.MessageId, message, cancellationToken).ConfigureAwait(false);
-                    activePfAlerts[listing.Fingerprint] = activeAlert with { LastContent = message };
+                    activeAlert.LastContent = message;
                     updatedCount++;
                 }
 
@@ -208,22 +233,52 @@ public sealed partial class Plugin
             matchingCount++;
             var newMessage = BuildLocalPfMessage(listing, config.RequiredRole);
             var result = await smsSender.SendTrackedAsync(config, newMessage, cancellationToken).ConfigureAwait(false);
-            activePfAlerts[listing.Fingerprint] = new ActivePfAlert(result.MessageId, newMessage);
+            activePfAlerts[listing.Fingerprint] = new PersistedPfAlert
+            {
+                MessageId = result.MessageId,
+                SeparatorMessageId = result.SeparatorMessageId,
+                LastContent = newMessage,
+                MissedPolls = 0,
+                ExpiresAtUnixSeconds = listing.ExpiresAtUnixSeconds,
+            };
+            stateChanged = true;
             newCount++;
         }
 
-        // A native PF category response is capped at 50 listings. If we received
-        // fewer than 50, the High-End Duty page is complete, so a tracked listing
-        // for this configured duty that is missing can safely be treated as gone.
-        // With exactly 50 results the response may be truncated, so never prune
-        // unseen listings in that case. Also avoid pruning on a zero-result scan,
-        // because an unavailable game state can produce no ReceiveListing events.
+        // The native PF response contains at most 50 entries. Below 50, absence is
+        // authoritative and we delete immediately. At 50, absence may only mean the
+        // listing was pushed beyond the visible result window, so require three
+        // consecutive misses before deleting. This prevents stale Discord posts from
+        // surviving forever while still avoiding deletion after one saturated scan.
         var completePage = listings.Count is > 0 and < LocalPfMaxListingsPerPage;
-        if (completePage)
+        var saturatedPage = listings.Count >= LocalPfMaxListingsPerPage;
+        var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        if (listings.Count > 0)
         {
             foreach (var pair in activePfAlerts.ToArray())
             {
-                if (seenFingerprints.Contains(pair.Key) || !FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
+                if (seenFingerprints.Contains(pair.Key))
+                    continue;
+
+                if (!FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
+                    continue;
+
+                var shouldRemove = completePage;
+
+                if (saturatedPage)
+                {
+                    pair.Value.MissedPolls++;
+                    stateChanged = true;
+
+                    if (pair.Value.MissedPolls >= SaturatedPageMissesBeforeRemoval ||
+                        (pair.Value.ExpiresAtUnixSeconds > 0 && pair.Value.ExpiresAtUnixSeconds <= nowUnix))
+                    {
+                        shouldRemove = true;
+                    }
+                }
+
+                if (!shouldRemove)
                     continue;
 
                 if (await DeleteLocalPfAlertAsync(pair.Key, pair.Value, config, cancellationToken).ConfigureAwait(false))
@@ -231,11 +286,14 @@ public sealed partial class Plugin
             }
         }
 
+        if (stateChanged)
+            config.Save();
+
         var completeness = listings.Count == 0
-            ? "no response listings; existing posts were not pruned"
+            ? "no response listings; existing posts kept"
             : completePage
-                ? "complete page"
-                : "50-listing page; missing posts were not pruned";
+                ? "complete page; missing posts removed immediately"
+                : $"50-listing page; unseen posts removed after {SaturatedPageMissesBeforeRemoval} consecutive misses";
 
         LocalPfStatus =
             $"Local PF: checked {DateTime.Now:t} - {listings.Count} High-End listings, " +
@@ -260,14 +318,19 @@ public sealed partial class Plugin
 
     private async Task<bool> DeleteLocalPfAlertAsync(
         string fingerprint,
-        ActivePfAlert activeAlert,
+        PersistedPfAlert activeAlert,
         Configuration config,
         CancellationToken cancellationToken)
     {
         try
         {
             await smsSender.DeleteAsync(config, activeAlert.MessageId, cancellationToken).ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(activeAlert.SeparatorMessageId))
+                await smsSender.DeleteAsync(config, activeAlert.SeparatorMessageId, cancellationToken).ConfigureAwait(false);
+
             activePfAlerts.Remove(fingerprint);
+            config.Save();
             return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -279,6 +342,12 @@ public sealed partial class Plugin
             Log.Warning(ex, "Could not remove Discord alert after local PF check for {Fingerprint}", fingerprint);
             return false;
         }
+    }
+
+    private async Task RemoveAllLocalPfAlertsAsync(CancellationToken cancellationToken)
+    {
+        foreach (var pair in activePfAlerts.ToArray())
+            await DeleteLocalPfAlertAsync(pair.Key, pair.Value, Configuration, cancellationToken).ConfigureAwait(false);
     }
 
     private static bool FingerprintMatchesConfiguredDuty(string fingerprint, string dutyNameContains)
