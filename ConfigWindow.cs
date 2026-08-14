@@ -14,8 +14,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public ConfigWindow(Plugin plugin) : base("PartyPing###PartyPingConfig")
     {
         this.plugin = plugin;
-        plugin.StartLocalPfAutoPolling();
-        Size = new Vector2(680, 820);
+        Size = new Vector2(680, 760);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -30,7 +29,7 @@ public sealed class ConfigWindow : Window, IDisposable
             Config.Save();
         }
 
-        DrawSectionHeader("XIVPF match rules");
+        DrawSectionHeader("Party Finder match rules");
 
         EditString("Duty name contains", Config.DutyNameContains, v => Config.DutyNameContains = v, 128);
         ImGui.TextDisabled("Example: Dancing Mad");
@@ -64,7 +63,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
             ImGui.EndCombo();
         }
-        ImGui.TextDisabled("PartyPing reads accepted job codes for open slots. Alerts are removed when this role is no longer open.");
+        ImGui.TextDisabled("Uses FFXIV's accepted job data for open slots. Alerts are removed when this role is no longer open.");
 
         var slots = Config.MinimumOpenSlots;
         if (ImGui.InputInt("Minimum open slots", ref slots))
@@ -72,34 +71,6 @@ public sealed class ConfigWindow : Window, IDisposable
             Config.MinimumOpenSlots = Math.Clamp(slots, 0, 24);
             Config.Save();
         }
-
-        var cooldown = Config.PerListingCooldownMinutes;
-        if (ImGui.InputInt("Same-listing cooldown (minutes)", ref cooldown))
-        {
-            Config.PerListingCooldownMinutes = Math.Clamp(cooldown, 1, 1440);
-            Config.Save();
-        }
-
-        DrawSectionHeader("XIVPF background monitoring");
-
-        var xivPfEnabled = Config.XivPfPollingEnabled;
-        if (ImGui.Checkbox("Monitor xivpf.com automatically", ref xivPfEnabled))
-        {
-            Config.XivPfPollingEnabled = xivPfEnabled;
-            Config.Save();
-        }
-
-        var pollSeconds = Config.XivPfPollSeconds;
-        if (ImGui.InputInt("XIVPF poll interval (seconds)", ref pollSeconds))
-        {
-            Config.XivPfPollSeconds = Math.Clamp(pollSeconds, 60, 600);
-            Config.Save();
-        }
-
-        ImGui.TextWrapped("Background Party Finder monitoring comes from XIVPF.com. PartyPing also polls the local FFXIV Party Finder automatically below for fresher results.");
-        ImGui.TextWrapped("Each PF alert is tracked by its Discord message ID. PartyPing edits or removes the post as the listing changes.");
-        ImGui.TextWrapped("FFXIV/Dalamud must still be running because PartyPing runs inside the game client.");
-        ImGui.TextDisabled(plugin.XivPfStatus);
 
         DrawSectionHeader("Local Party Finder polling");
 
@@ -112,8 +83,8 @@ public sealed class ConfigWindow : Window, IDisposable
         if (plugin.LocalPfCheckInProgress)
             ImGui.EndDisabled();
 
-        ImGui.TextWrapped("Automatic. PartyPing chooses a new whole-second interval from 30 through 60 seconds after each cycle and requests the High-End Duty Party Finder category directly from FFXIV without opening the Party Finder window.");
-        ImGui.TextWrapped("The button above still performs an immediate check. Local results use the same duty/keyword/open-slot filters and exact local job-slot data for your selected role. Matching Discord posts are created or updated; locally invalid or closed listings are removed when the scan can prove it safely.");
+        ImGui.TextWrapped("PartyPing automatically polls FFXIV's High-End Duty Party Finder at a new random whole-second interval from 30 through 60 seconds after each cycle. The Party Finder window does not need to be open.");
+        ImGui.TextWrapped("The button above performs an immediate check. Matching posts are created or edited with current local data; posts are removed when the listing closes, fills, stops matching your description filters, falls below the minimum open slots, or no longer has your selected role open.");
         ImGui.TextDisabled(plugin.LocalPfStatus);
 
         DrawSectionHeader("My party tracker");
@@ -153,13 +124,13 @@ public sealed class ConfigWindow : Window, IDisposable
         if (clearInProgress)
             ImGui.EndDisabled();
 
-        ImGui.TextDisabled("Deletes tracked PartyPing posts, then matching listings repopulate on the next poll.");
+        ImGui.TextDisabled("Deletes tracked PartyPing posts, then matching local PF listings repopulate on the next poll.");
         if (!string.IsNullOrWhiteSpace(clearStatus))
             ImGui.TextWrapped(clearStatus);
 
         ImGui.Spacing();
         DrawSectionHeader("Important");
-        ImGui.TextWrapped("XIVPF is crowdsourced, so it can lag behind the in-game Party Finder. Local FFXIV checks now run automatically at a randomized 30-60 second interval and currently request High-End Duty only.");
+        ImGui.TextWrapped("PartyPing now uses only data received directly from the FFXIV Party Finder. Automatic polling currently requests the High-End Duty category only and pauses while you are inside a duty, zoning, or in a cutscene.");
     }
 
     private async Task ClearDiscordMessagesAsync()
@@ -176,8 +147,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
             if (result.Failed == 0)
             {
-                plugin.ResetXivPfAlertStateAfterManualClear();
-                clearStatus = $"Cleared {result.Removed} PartyPing Discord message(s). Matching listings will repopulate on the next poll.";
+                plugin.ResetPfAlertStateAfterManualClear();
+                clearStatus = $"Cleared {result.Removed} PartyPing Discord message(s). Matching local PF listings will repopulate on the next poll.";
             }
             else
             {
