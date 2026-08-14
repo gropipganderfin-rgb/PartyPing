@@ -1,14 +1,21 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
 namespace PartyPing;
 
-internal sealed record DiscordSendResult(string Status, string MessageId, string? SeparatorMessageId = null);
+internal sealed record DiscordSendResult(
+    string Status,
+    string MessageId,
+    string? SeparatorMessageId = null,
+    string Transport = "webhook");
 
 internal sealed class DiscordNotifier : IDisposable
 {
+    private const string DiscordApiBase = "https://discord.com/api/v10";
     private const int PartyFinderEmbedColor = 0x5865F2;
+    private const string OpenButtonPrefix = "partyping_open:";
 
     private readonly HttpClient http = new();
 
@@ -19,8 +26,12 @@ internal sealed class DiscordNotifier : IDisposable
         string Role,
         string World,
         string Recruiter,
-        string OpenInFfxiv,
+        string ListingId,
         string Description);
+
+    internal static bool HasBotTransport(Configuration config) =>
+        !string.IsNullOrWhiteSpace(config.DiscordBotToken) &&
+        ulong.TryParse(config.DiscordChannelId?.Trim(), out _);
 
     public async Task<string> SendAsync(Configuration config, string body, CancellationToken cancellationToken)
     {
@@ -28,53 +39,199 @@ internal sealed class DiscordNotifier : IDisposable
         return result.Status;
     }
 
-    public async Task<DiscordSendResult> SendTrackedAsync(Configuration config, string body, CancellationToken cancellationToken)
-    {
-        var webhookUrl = ValidateWebhookUrl(config.DiscordWebhookUrl);
-        var executeUrl = WithWait(webhookUrl);
-        var payload = CreatePayload(body, includeUsername: true);
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, executeUrl)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
-        };
-
-        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Discord returned {(int)response.StatusCode}: {Trim(responseBody, 220)}");
-
-        using var json = JsonDocument.Parse(responseBody);
-        if (!json.RootElement.TryGetProperty("id", out var idElement))
-            throw new InvalidOperationException("Discord sent the notification but did not return a message ID.");
-
-        var messageId = idElement.GetString();
-        if (string.IsNullOrWhiteSpace(messageId))
-            throw new InvalidOperationException("Discord returned an empty message ID.");
-
-        return new DiscordSendResult("Discord notification sent", messageId);
-    }
+    public Task<DiscordSendResult> SendTrackedAsync(
+        Configuration config,
+        string body,
+        CancellationToken cancellationToken) =>
+        HasBotTransport(config)
+            ? SendBotAsync(config, body, cancellationToken)
+            : SendWebhookAsync(config, body, cancellationToken);
 
     public async Task<string> EditAsync(
         Configuration config,
         string messageId,
         string body,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? transportHint = null)
     {
         if (string.IsNullOrWhiteSpace(messageId))
             throw new InvalidOperationException("Discord message ID is missing.");
 
-        var webhookUrl = ValidateWebhookUrl(config.DiscordWebhookUrl);
-        var editUrl = BuildMessageUrl(webhookUrl, messageId);
-        var payload = CreatePayload(body, includeUsername: false);
-
-        using var request = new HttpRequestMessage(HttpMethod.Patch, editUrl)
+        if (string.Equals(transportHint, "bot", StringComparison.OrdinalIgnoreCase))
         {
-            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+            var bot = await EditBotAsync(config, messageId, body, cancellationToken).ConfigureAwait(false);
+            return bot.Found ? bot.Status : "Discord notification already removed";
+        }
+
+        if (string.Equals(transportHint, "webhook", StringComparison.OrdinalIgnoreCase))
+            return await EditWebhookAsync(config, messageId, body, cancellationToken).ConfigureAwait(false);
+
+        // Older PartyPing versions did not persist which Discord transport owned a
+        // message. When bot mode is configured, try the bot channel first and fall
+        // back to the old webhook on 404 so those messages remain manageable.
+        if (HasBotTransport(config))
+        {
+            var bot = await EditBotAsync(config, messageId, body, cancellationToken).ConfigureAwait(false);
+            if (bot.Found)
+                return bot.Status;
+        }
+
+        if (HasWebhookTransport(config))
+            return await EditWebhookAsync(config, messageId, body, cancellationToken).ConfigureAwait(false);
+
+        return "Discord notification already removed";
+    }
+
+    public async Task<string> DeleteAsync(
+        Configuration config,
+        string messageId,
+        CancellationToken cancellationToken,
+        string? transportHint = null)
+    {
+        if (string.IsNullOrWhiteSpace(messageId))
+            return "Discord notification already removed";
+
+        if (string.Equals(transportHint, "bot", StringComparison.OrdinalIgnoreCase))
+        {
+            var bot = await DeleteBotAsync(config, messageId, cancellationToken).ConfigureAwait(false);
+            return bot.Found ? bot.Status : "Discord notification already removed";
+        }
+
+        if (string.Equals(transportHint, "webhook", StringComparison.OrdinalIgnoreCase))
+            return await DeleteWebhookAsync(config, messageId, cancellationToken).ConfigureAwait(false);
+
+        if (HasBotTransport(config))
+        {
+            var bot = await DeleteBotAsync(config, messageId, cancellationToken).ConfigureAwait(false);
+            if (bot.Found)
+                return bot.Status;
+        }
+
+        if (HasWebhookTransport(config))
+            return await DeleteWebhookAsync(config, messageId, cancellationToken).ConfigureAwait(false);
+
+        return "Discord notification already removed";
+    }
+
+    private async Task<DiscordSendResult> SendBotAsync(
+        Configuration config,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        var url = BuildBotMessageUrl(config, null);
+        var payload = CreatePayload(body, includeUsername: false, includeButton: true);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = JsonContent(payload),
+        };
+        AddBotAuthorization(request, config);
+
+        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Discord bot send returned {(int)response.StatusCode}: {Trim(responseBody, 220)}");
+
+        var messageId = ReadMessageId(responseBody);
+        return new DiscordSendResult("Discord bot notification sent", messageId, null, "bot");
+    }
+
+    private async Task<(bool Found, string Status)> EditBotAsync(
+        Configuration config,
+        string messageId,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        if (!HasBotTransport(config))
+            return (false, "Discord bot is not configured");
+
+        var url = BuildBotMessageUrl(config, messageId);
+        var payload = CreatePayload(body, includeUsername: false, includeButton: true);
+        using var request = new HttpRequestMessage(HttpMethod.Patch, url)
+        {
+            Content = JsonContent(payload),
+        };
+        AddBotAuthorization(request, config);
+
+        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return (false, "Discord notification already removed");
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException($"Discord bot edit returned {(int)response.StatusCode}: {Trim(responseBody, 220)}");
+        }
+
+        return (true, "Discord bot notification updated");
+    }
+
+    private async Task<(bool Found, string Status)> DeleteBotAsync(
+        Configuration config,
+        string messageId,
+        CancellationToken cancellationToken)
+    {
+        if (!HasBotTransport(config))
+            return (false, "Discord bot is not configured");
+
+        var url = BuildBotMessageUrl(config, messageId);
+        using var request = new HttpRequestMessage(HttpMethod.Delete, url);
+        AddBotAuthorization(request, config);
+
+        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return (false, "Discord notification already removed");
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException($"Discord bot delete returned {(int)response.StatusCode}: {Trim(responseBody, 220)}");
+        }
+
+        return (true, "Discord bot notification removed");
+    }
+
+    private async Task<DiscordSendResult> SendWebhookAsync(
+        Configuration config,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        var webhookUrl = ValidateWebhookUrl(config.DiscordWebhookUrl);
+        var executeUrl = WithWait(webhookUrl);
+        var payload = CreatePayload(body, includeUsername: true, includeButton: false);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, executeUrl)
+        {
+            Content = JsonContent(payload),
         };
 
         using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Discord returned {(int)response.StatusCode}: {Trim(responseBody, 220)}");
+
+        return new DiscordSendResult("Discord notification sent", ReadMessageId(responseBody), null, "webhook");
+    }
+
+    private async Task<string> EditWebhookAsync(
+        Configuration config,
+        string messageId,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        var webhookUrl = ValidateWebhookUrl(config.DiscordWebhookUrl);
+        var editUrl = BuildWebhookMessageUrl(webhookUrl, messageId);
+        var payload = CreatePayload(body, includeUsername: false, includeButton: false);
+
+        using var request = new HttpRequestMessage(HttpMethod.Patch, editUrl)
+        {
+            Content = JsonContent(payload),
+        };
+
+        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return "Discord notification already removed";
+
         if (!response.IsSuccessStatusCode)
         {
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -84,13 +241,13 @@ internal sealed class DiscordNotifier : IDisposable
         return "Discord notification updated";
     }
 
-    public async Task<string> DeleteAsync(Configuration config, string messageId, CancellationToken cancellationToken)
+    private async Task<string> DeleteWebhookAsync(
+        Configuration config,
+        string messageId,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(messageId))
-            return "Discord notification already removed";
-
         var webhookUrl = ValidateWebhookUrl(config.DiscordWebhookUrl);
-        var deleteUrl = BuildMessageUrl(webhookUrl, messageId);
+        var deleteUrl = BuildWebhookMessageUrl(webhookUrl, messageId);
 
         using var request = new HttpRequestMessage(HttpMethod.Delete, deleteUrl);
         using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -107,7 +264,7 @@ internal sealed class DiscordNotifier : IDisposable
         return "Discord notification removed";
     }
 
-    private static object CreatePayload(string body, bool includeUsername)
+    private static object CreatePayload(string body, bool includeUsername, bool includeButton)
     {
         var allowedMentions = new
         {
@@ -128,13 +285,32 @@ internal sealed class DiscordNotifier : IDisposable
                     new { name = "Role", value = pf.Role, inline = true },
                     new { name = "World", value = pf.World, inline = true },
                     new { name = "Recruiter", value = pf.Recruiter, inline = true },
-                    new { name = "Open in FFXIV", value = pf.OpenInFfxiv, inline = false },
                 },
                 footer = new
                 {
                     text = "Local FFXIV Party Finder",
                 },
             };
+
+            var components = includeButton && ulong.TryParse(pf.ListingId, out var listingId) && listingId != 0
+                ? new object[]
+                {
+                    new
+                    {
+                        type = 1,
+                        components = new[]
+                        {
+                            new
+                            {
+                                type = 2,
+                                style = 1,
+                                label = "Open in FFXIV",
+                                custom_id = OpenButtonPrefix + pf.ListingId,
+                            },
+                        },
+                    },
+                }
+                : Array.Empty<object>();
 
             if (includeUsername)
             {
@@ -143,6 +319,7 @@ internal sealed class DiscordNotifier : IDisposable
                     username = "PartyPing",
                     content = string.Empty,
                     embeds = new[] { embed },
+                    components,
                     allowed_mentions = allowedMentions,
                 };
             }
@@ -151,6 +328,7 @@ internal sealed class DiscordNotifier : IDisposable
             {
                 content = string.Empty,
                 embeds = new[] { embed },
+                components,
                 allowed_mentions = allowedMentions,
             };
         }
@@ -162,6 +340,7 @@ internal sealed class DiscordNotifier : IDisposable
                 username = "PartyPing",
                 content = body,
                 embeds = Array.Empty<object>(),
+                components = Array.Empty<object>(),
                 allowed_mentions = allowedMentions,
             };
         }
@@ -170,6 +349,7 @@ internal sealed class DiscordNotifier : IDisposable
         {
             content = body,
             embeds = Array.Empty<object>(),
+            components = Array.Empty<object>(),
             allowed_mentions = allowedMentions,
         };
     }
@@ -192,7 +372,7 @@ internal sealed class DiscordNotifier : IDisposable
         var role = FindField(lines, "**Role filter:**");
         var world = FindField(lines, "**World:**");
         var recruiter = FindField(lines, "**Recruiter:**");
-        var openInFfxiv = FindField(lines, "**Open in FFXIV:**");
+        var listingId = FindField(lines, "**Listing ID:**");
 
         var descriptionIndex = Array.FindIndex(lines, x => x.Equals("### Party Finder Description", StringComparison.Ordinal));
         var description = descriptionIndex >= 0
@@ -211,7 +391,7 @@ internal sealed class DiscordNotifier : IDisposable
             Trim(role, 1024),
             Trim(world, 1024),
             Trim(recruiter, 1024),
-            Trim(openInFfxiv, 1024),
+            listingId,
             Trim(description, 4096));
         return true;
     }
@@ -226,6 +406,43 @@ internal sealed class DiscordNotifier : IDisposable
         return string.IsNullOrWhiteSpace(value) ? "Unknown" : value;
     }
 
+    private static StringContent JsonContent(object payload) =>
+        new(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+    private static string ReadMessageId(string responseBody)
+    {
+        using var json = JsonDocument.Parse(responseBody);
+        if (!json.RootElement.TryGetProperty("id", out var idElement))
+            throw new InvalidOperationException("Discord sent the notification but did not return a message ID.");
+
+        var messageId = idElement.GetString();
+        return string.IsNullOrWhiteSpace(messageId)
+            ? throw new InvalidOperationException("Discord returned an empty message ID.")
+            : messageId;
+    }
+
+    private static string BuildBotMessageUrl(Configuration config, string? messageId)
+    {
+        if (!ulong.TryParse(config.DiscordChannelId?.Trim(), out var channelId) || channelId == 0)
+            throw new InvalidOperationException("Discord bot channel ID is invalid.");
+
+        var baseUrl = $"{DiscordApiBase}/channels/{channelId}/messages";
+        return string.IsNullOrWhiteSpace(messageId)
+            ? baseUrl
+            : baseUrl + "/" + Uri.EscapeDataString(messageId.Trim());
+    }
+
+    private static void AddBotAuthorization(HttpRequestMessage request, Configuration config)
+    {
+        if (string.IsNullOrWhiteSpace(config.DiscordBotToken))
+            throw new InvalidOperationException("Discord bot token is missing.");
+
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bot", config.DiscordBotToken.Trim());
+    }
+
+    private static bool HasWebhookTransport(Configuration config) =>
+        !string.IsNullOrWhiteSpace(config.DiscordWebhookUrl);
+
     private static Uri WithWait(Uri webhookUrl)
     {
         var builder = new UriBuilder(webhookUrl);
@@ -234,7 +451,7 @@ internal sealed class DiscordNotifier : IDisposable
         return builder.Uri;
     }
 
-    private static Uri BuildMessageUrl(Uri webhookUrl, string messageId)
+    private static Uri BuildWebhookMessageUrl(Uri webhookUrl, string messageId)
     {
         var builder = new UriBuilder(webhookUrl)
         {
