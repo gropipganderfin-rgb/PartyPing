@@ -276,17 +276,11 @@ internal sealed class DiscordNotifier : IDisposable
                 title = pf.Duty,
                 description = pf.Description,
                 color = PartyFinderEmbedColor,
-                fields = new[]
+                fields = new object[]
                 {
                     new { name = "Party", value = pf.Party, inline = true },
-                    new { name = "Open slots", value = pf.OpenSlots, inline = true },
-                    new { name = "Role", value = pf.Role, inline = true },
-                    new { name = "World", value = pf.World, inline = true },
-                    new { name = "Recruiter", value = pf.Recruiter, inline = true },
-                },
-                footer = new
-                {
-                    text = "Local FFXIV Party Finder",
+                    new { name = "Role", value = CleanRoleDisplay(pf.Role), inline = true },
+                    new { name = "Recruiter", value = pf.Recruiter, inline = false },
                 },
             };
 
@@ -399,6 +393,14 @@ internal sealed class DiscordNotifier : IDisposable
             listingId,
             Trim(description, 4096));
         return true;
+    }
+
+    private static string CleanRoleDisplay(string role)
+    {
+        const string verifiedSuffix = " - open (verified locally)";
+        return role.EndsWith(verifiedSuffix, StringComparison.OrdinalIgnoreCase)
+            ? role[..^verifiedSuffix.Length].Trim()
+            : role;
     }
 
     private static string FindField(string[] lines, string prefix)
