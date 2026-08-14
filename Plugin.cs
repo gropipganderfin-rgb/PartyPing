@@ -54,6 +54,7 @@ public sealed partial class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi += ToggleConfig;
         Framework.Update += OnFrameworkUpdate;
 
+        _ = RemoveLegacyPfSeparatorsAsync();
         StartLocalPfAutoPolling();
     }
 
@@ -90,6 +91,35 @@ public sealed partial class Plugin : IDalamudPlugin
         Configuration.Save();
         LocalPfStatus = "Local PF: cleared - matching listings will repopulate on the next poll";
         Log.Information("PartyPing manual clear reset local PF alert state");
+    }
+
+    private async Task RemoveLegacyPfSeparatorsAsync()
+    {
+        var changed = false;
+
+        foreach (var alert in activePfAlerts.Values)
+        {
+            if (string.IsNullOrWhiteSpace(alert.SeparatorMessageId))
+                continue;
+
+            try
+            {
+                await smsSender.DeleteAsync(Configuration, alert.SeparatorMessageId, cancellation.Token).ConfigureAwait(false);
+                alert.SeparatorMessageId = null;
+                changed = true;
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "PartyPing could not remove a legacy Discord PF separator");
+            }
+        }
+
+        if (changed)
+            Configuration.Save();
     }
 
     private void OnFrameworkUpdate(IFramework framework)
