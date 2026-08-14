@@ -172,7 +172,7 @@ public sealed partial class Plugin
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "PartyPing could not open PF listing {ListingId} from a Discord link", listingId);
+            Log.Warning(ex, "PartyPing could not open PF listing {ListingId} from a Discord button", listingId);
             return false;
         }
     }
@@ -232,6 +232,8 @@ public sealed partial class Plugin
         var removedCount = 0;
         var stateChanged = false;
 
+        // If the configured duty changes, old-duty posts are no longer valid and
+        // should disappear immediately instead of waiting to show up in a scan.
         foreach (var pair in activePfAlerts.ToArray())
         {
             if (FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
@@ -263,9 +265,51 @@ public sealed partial class Plugin
                 stateChanged = true;
 
                 var message = BuildLocalPfMessage(listing, config.RequiredRole);
+
+                // Existing cards created by the old incoming webhook cannot gain a
+                // real interactive button. Once bot mode is configured, replace them
+                // with bot-owned cards automatically and keep tracking the new ID.
+                if (DiscordNotifier.HasBotTransport(config) &&
+                    !string.Equals(activeAlert.Transport, "bot", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        await smsSender.DeleteAsync(
+                            config,
+                            activeAlert.MessageId,
+                            cancellationToken,
+                            activeAlert.Transport).ConfigureAwait(false);
+
+                        if (!string.IsNullOrWhiteSpace(activeAlert.SeparatorMessageId))
+                        {
+                            await smsSender.DeleteAsync(
+                                config,
+                                activeAlert.SeparatorMessageId,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+
+                        var replacement = await smsSender.SendTrackedAsync(config, message, cancellationToken).ConfigureAwait(false);
+                        activeAlert.MessageId = replacement.MessageId;
+                        activeAlert.SeparatorMessageId = replacement.SeparatorMessageId;
+                        activeAlert.LastContent = message;
+                        activeAlert.Transport = replacement.Transport;
+                        updatedCount++;
+                        continue;
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        Log.Warning(ex, "PartyPing could not migrate a PF Discord card to bot transport");
+                    }
+                }
+
                 if (!string.Equals(message, activeAlert.LastContent, StringComparison.Ordinal))
                 {
-                    await smsSender.EditAsync(config, activeAlert.MessageId, message, cancellationToken).ConfigureAwait(false);
+                    await smsSender.EditAsync(
+                        config,
+                        activeAlert.MessageId,
+                        message,
+                        cancellationToken,
+                        activeAlert.Transport).ConfigureAwait(false);
                     activeAlert.LastContent = message;
                     updatedCount++;
                 }
@@ -286,11 +330,17 @@ public sealed partial class Plugin
                 LastContent = newMessage,
                 MissedPolls = 0,
                 ExpiresAtUnixSeconds = listing.ExpiresAtUnixSeconds,
+                Transport = result.Transport,
             };
             stateChanged = true;
             newCount++;
         }
 
+        // The native PF response contains at most 50 entries. Below 50, absence is
+        // authoritative and we delete immediately. At 50, absence may only mean the
+        // listing was pushed beyond the visible result window, so require three
+        // consecutive misses before deleting. This prevents stale Discord posts from
+        // surviving forever while still avoiding deletion after one saturated scan.
         var completePage = listings.Count is > 0 and < LocalPfMaxListingsPerPage;
         var saturatedPage = listings.Count >= LocalPfMaxListingsPerPage;
         var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -365,7 +415,11 @@ public sealed partial class Plugin
     {
         try
         {
-            await smsSender.DeleteAsync(config, activeAlert.MessageId, cancellationToken).ConfigureAwait(false);
+            await smsSender.DeleteAsync(
+                config,
+                activeAlert.MessageId,
+                cancellationToken,
+                activeAlert.Transport).ConfigureAwait(false);
 
             if (!string.IsNullOrWhiteSpace(activeAlert.SeparatorMessageId))
                 await smsSender.DeleteAsync(config, activeAlert.SeparatorMessageId, cancellationToken).ConfigureAwait(false);
@@ -401,17 +455,13 @@ public sealed partial class Plugin
         return duty.Contains(dutyNameContains.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
-    private string BuildLocalPfMessage(LocalPfListingSnapshot listing, RoleFilter role)
+    private static string BuildLocalPfMessage(LocalPfListingSnapshot listing, RoleFilter role)
     {
         var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
         var cleaned = CleanDescription(listing.Description);
         var roleText = role == RoleFilter.AnyRole
             ? "Any role"
             : $"{role.DisplayName()} - open (verified locally)";
-        var openUrl = localPfLinkServer.BuildOpenUrl(listing.ListingId);
-        var openText = openUrl is null
-            ? "Unavailable - PartyPing localhost handoff is not running"
-            : $"[▶ Open this listing]({openUrl})";
 
         return
             $"## {listing.Duty}\n" +
@@ -421,7 +471,7 @@ public sealed partial class Plugin
             $"**Role filter:** {roleText}\n" +
             $"**World:** {listing.World}\n" +
             $"**Recruiter:** {listing.Recruiter}\n" +
-            $"**Open in FFXIV:** {openText}\n\n" +
+            $"**Listing ID:** {listing.ListingId}\n\n" +
             "### Party Finder Description\n" +
             $"> {cleaned}";
     }
