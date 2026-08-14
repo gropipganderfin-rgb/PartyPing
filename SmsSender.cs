@@ -27,6 +27,13 @@ internal sealed class SmsSender : IDisposable
         string? transportHint = null)
     {
         EnsureLegacyDiscordUrl(config);
+
+        // Once bot transport is enabled, a missing legacy webhook must not break PF
+        // polling just because an older persisted alert was webhook-owned. The bot
+        // migration path will replace that orphaned alert with a bot-owned card.
+        if (IsUnavailableLegacyWebhook(config, transportHint))
+            return "Legacy Discord webhook unavailable";
+
         var message = PrepareMessage(body);
         return await discord.EditAsync(config, messageId, message, cancellationToken, transportHint).ConfigureAwait(false);
     }
@@ -38,6 +45,13 @@ internal sealed class SmsSender : IDisposable
         string? transportHint = null)
     {
         EnsureLegacyDiscordUrl(config);
+
+        if (IsUnavailableLegacyWebhook(config, transportHint))
+        {
+            DiscordMessageStore.Remove(config, messageId);
+            return "Legacy Discord webhook unavailable; local tracking removed";
+        }
+
         var result = await discord.DeleteAsync(config, messageId, cancellationToken, transportHint).ConfigureAwait(false);
         DiscordMessageStore.Remove(config, messageId);
         return result;
@@ -45,6 +59,11 @@ internal sealed class SmsSender : IDisposable
 
     private static string PrepareMessage(string body) =>
         body.Replace("SMS alerts", "Discord notifications", StringComparison.OrdinalIgnoreCase).TrimEnd();
+
+    private static bool IsUnavailableLegacyWebhook(Configuration config, string? transportHint) =>
+        string.Equals(transportHint, "webhook", StringComparison.OrdinalIgnoreCase) &&
+        string.IsNullOrWhiteSpace(config.DiscordWebhookUrl) &&
+        string.IsNullOrWhiteSpace(config.TwilioAccountSid);
 
     private static void EnsureLegacyDiscordUrl(Configuration config)
     {
