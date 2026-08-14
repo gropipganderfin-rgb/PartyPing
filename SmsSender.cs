@@ -5,7 +5,6 @@ internal sealed class SmsSender : IDisposable
     private const string PfSeparator = "\u200B\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\u200B";
 
     private readonly DiscordNotifier discord = new();
-    private readonly Dictionary<string, string> separatorByMessageId = new(StringComparer.Ordinal);
 
     public async Task<string> SendAsync(Configuration config, string body, CancellationToken cancellationToken)
     {
@@ -20,13 +19,14 @@ internal sealed class SmsSender : IDisposable
         var result = await discord.SendTrackedAsync(config, message, cancellationToken).ConfigureAwait(false);
         DiscordMessageStore.Add(config, result.MessageId);
 
+        string? separatorMessageId = null;
         if (IsPartyFinderMessage(message))
         {
             try
             {
                 var separator = await discord.SendTrackedAsync(config, PfSeparator, cancellationToken).ConfigureAwait(false);
                 DiscordMessageStore.Add(config, separator.MessageId);
-                separatorByMessageId[result.MessageId] = separator.MessageId;
+                separatorMessageId = separator.MessageId;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -38,7 +38,7 @@ internal sealed class SmsSender : IDisposable
             }
         }
 
-        return result;
+        return result with { SeparatorMessageId = separatorMessageId };
     }
 
     public async Task<string> EditAsync(Configuration config, string messageId, string body, CancellationToken cancellationToken)
@@ -53,14 +53,6 @@ internal sealed class SmsSender : IDisposable
         EnsureDiscordUrl(config);
         var result = await discord.DeleteAsync(config, messageId, cancellationToken).ConfigureAwait(false);
         DiscordMessageStore.Remove(config, messageId);
-
-        if (separatorByMessageId.TryGetValue(messageId, out var separatorMessageId))
-        {
-            await discord.DeleteAsync(config, separatorMessageId, cancellationToken).ConfigureAwait(false);
-            DiscordMessageStore.Remove(config, separatorMessageId);
-            separatorByMessageId.Remove(messageId);
-        }
-
         return result;
     }
 
