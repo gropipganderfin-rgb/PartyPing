@@ -8,7 +8,18 @@ internal sealed record DiscordSendResult(string Status, string MessageId);
 
 internal sealed class DiscordNotifier : IDisposable
 {
+    private const int PartyFinderEmbedColor = 0x5865F2;
+
     private readonly HttpClient http = new();
+
+    private sealed record PartyFinderEmbedData(
+        string Duty,
+        string Party,
+        string OpenSlots,
+        string Role,
+        string World,
+        string Recruiter,
+        string Description);
 
     public async Task<string> SendAsync(Configuration config, string body, CancellationToken cancellationToken)
     {
@@ -97,27 +108,118 @@ internal sealed class DiscordNotifier : IDisposable
 
     private static object CreatePayload(string body, bool includeUsername)
     {
+        var allowedMentions = new
+        {
+            parse = Array.Empty<string>(),
+        };
+
+        if (TryParsePartyFinderMessage(body, out var pf))
+        {
+            var embed = new
+            {
+                title = pf.Duty,
+                description = pf.Description,
+                color = PartyFinderEmbedColor,
+                fields = new[]
+                {
+                    new { name = "Party", value = pf.Party, inline = true },
+                    new { name = "Open slots", value = pf.OpenSlots, inline = true },
+                    new { name = "Role", value = pf.Role, inline = true },
+                    new { name = "World", value = pf.World, inline = true },
+                    new { name = "Recruiter", value = pf.Recruiter, inline = true },
+                },
+                footer = new
+                {
+                    text = "Local FFXIV Party Finder",
+                },
+            };
+
+            if (includeUsername)
+            {
+                return new
+                {
+                    username = "PartyPing",
+                    content = string.Empty,
+                    embeds = new[] { embed },
+                    allowed_mentions = allowedMentions,
+                };
+            }
+
+            return new
+            {
+                content = string.Empty,
+                embeds = new[] { embed },
+                allowed_mentions = allowedMentions,
+            };
+        }
+
         if (includeUsername)
         {
             return new
             {
                 username = "PartyPing",
                 content = body,
-                allowed_mentions = new
-                {
-                    parse = Array.Empty<string>(),
-                },
+                embeds = Array.Empty<object>(),
+                allowed_mentions = allowedMentions,
             };
         }
 
         return new
         {
             content = body,
-            allowed_mentions = new
-            {
-                parse = Array.Empty<string>(),
-            },
+            embeds = Array.Empty<object>(),
+            allowed_mentions = allowedMentions,
         };
+    }
+
+    private static bool TryParsePartyFinderMessage(string body, out PartyFinderEmbedData data)
+    {
+        data = null!;
+
+        if (!body.Contains("**Source:** Local FFXIV Party Finder", StringComparison.Ordinal))
+            return false;
+
+        var lines = body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var dutyLine = lines.FirstOrDefault(x => x.StartsWith("## ", StringComparison.Ordinal));
+        if (dutyLine is null)
+            return false;
+
+        var duty = dutyLine[3..].Trim();
+        var party = FindField(lines, "**Party:**");
+        var openSlots = FindField(lines, "**Open slots:**");
+        var role = FindField(lines, "**Role filter:**");
+        var world = FindField(lines, "**World:**");
+        var recruiter = FindField(lines, "**Recruiter:**");
+
+        var descriptionIndex = Array.FindIndex(lines, x => x.Equals("### Party Finder Description", StringComparison.Ordinal));
+        var description = descriptionIndex >= 0
+            ? string.Join('\n', lines[(descriptionIndex + 1)..]
+                .Select(x => x.StartsWith("> ", StringComparison.Ordinal) ? x[2..] : x)
+                .Where(x => !string.IsNullOrWhiteSpace(x)))
+            : "No description";
+
+        if (string.IsNullOrWhiteSpace(description))
+            description = "No description";
+
+        data = new PartyFinderEmbedData(
+            Trim(duty, 256),
+            Trim(party, 1024),
+            Trim(openSlots, 1024),
+            Trim(role, 1024),
+            Trim(world, 1024),
+            Trim(recruiter, 1024),
+            Trim(description, 4096));
+        return true;
+    }
+
+    private static string FindField(string[] lines, string prefix)
+    {
+        var line = lines.FirstOrDefault(x => x.StartsWith(prefix, StringComparison.Ordinal));
+        if (line is null)
+            return "Unknown";
+
+        var value = line[prefix.Length..].Trim();
+        return string.IsNullOrWhiteSpace(value) ? "Unknown" : value;
     }
 
     private static Uri WithWait(Uri webhookUrl)
