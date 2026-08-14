@@ -2,8 +2,6 @@ namespace PartyPing;
 
 internal sealed class SmsSender : IDisposable
 {
-    private const string PostDivider = "\n\n---------";
-
     private readonly DiscordNotifier discord = new();
 
     public async Task<string> SendAsync(Configuration config, string body, CancellationToken cancellationToken)
@@ -36,11 +34,8 @@ internal sealed class SmsSender : IDisposable
         return result;
     }
 
-    private static string PrepareMessage(string body)
-    {
-        var message = body.Replace("SMS alerts", "Discord notifications", StringComparison.OrdinalIgnoreCase).TrimEnd();
-        return message.EndsWith("---------", StringComparison.Ordinal) ? message : message + PostDivider;
-    }
+    private static string PrepareMessage(string body) =>
+        body.Replace("SMS alerts", "Discord notifications", StringComparison.OrdinalIgnoreCase).TrimEnd();
 
     private static void EnsureDiscordUrl(Configuration config)
     {
