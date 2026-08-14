@@ -5,7 +5,7 @@ namespace PartyPing;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 6;
+    public int Version { get; set; } = 7;
 
     public bool Enabled { get; set; } = false;
     public ushort DutyId { get; set; } = 0;
@@ -15,10 +15,6 @@ public sealed class Configuration : IPluginConfiguration
     public bool RequireAllIncludeKeywords { get; set; } = false;
     public int MinimumOpenSlots { get; set; } = 1;
     public RoleFilter RequiredRole { get; set; } = RoleFilter.AnyRole;
-    public int PerListingCooldownMinutes { get; set; } = 180;
-
-    public bool XivPfPollingEnabled { get; set; } = true;
-    public int XivPfPollSeconds { get; set; } = 90;
 
     public bool NotifyWhenPartyFull { get; set; } = true;
 
