@@ -1,1 +1,169 @@
-name: placeholder
+name: Apply PartyPing Discord Card Cleanup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-card-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-commit:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Apply Discord card cleanup
+        shell: pwsh
+        run: |
+          $path = "DiscordNotifier.cs"
+          $content = (Get-Content $path -Raw) -replace "`r`n", "`n"
+
+          $oldRecord = @'
+    private sealed record PartyFinderEmbedData(
+        string Duty,
+        string Party,
+        string OpenSlots,
+        string Role,
+        string World,
+        string Recruiter,
+        string ListingId,
+        string Description);
+'@ -replace "`r`n", "`n"
+
+          $newRecord = @'
+    private sealed record PartyFinderEmbedData(
+        string Duty,
+        string Party,
+        string Role,
+        string Recruiter,
+        string ListingId,
+        string Description);
+'@ -replace "`r`n", "`n"
+
+          $oldEmbed = @'
+                fields = new[]
+                {
+                    new { name = "Party", value = pf.Party, inline = true },
+                    new { name = "Open slots", value = pf.OpenSlots, inline = true },
+                    new { name = "Role", value = pf.Role, inline = true },
+                    new { name = "World", value = pf.World, inline = true },
+                    new { name = "Recruiter", value = pf.Recruiter, inline = true },
+                },
+                footer = new
+                {
+                    text = "Local FFXIV Party Finder",
+                },
+'@ -replace "`r`n", "`n"
+
+          $newEmbed = @'
+                fields = new object[]
+                {
+                    new { name = "Party", value = pf.Party, inline = true },
+                    new { name = "Role", value = CleanRoleDisplay(pf.Role), inline = true },
+                    new { name = "Recruiter", value = pf.Recruiter, inline = false },
+                },
+'@ -replace "`r`n", "`n"
+
+          $oldParse = @'
+        var party = FindField(lines, "**Party:**");
+        var openSlots = FindField(lines, "**Open slots:**");
+        var role = FindField(lines, "**Role filter:**");
+        var world = FindField(lines, "**World:**");
+        var recruiter = FindField(lines, "**Recruiter:**");
+        var listingId = FindField(lines, "**Listing ID:**");
+'@ -replace "`r`n", "`n"
+
+          $newParse = @'
+        var party = FindField(lines, "**Party:**");
+        var role = FindField(lines, "**Role filter:**");
+        var recruiter = FindField(lines, "**Recruiter:**");
+        var listingId = FindField(lines, "**Listing ID:**");
+'@ -replace "`r`n", "`n"
+
+          $oldData = @'
+        data = new PartyFinderEmbedData(
+            Trim(duty, 256),
+            Trim(party, 1024),
+            Trim(openSlots, 1024),
+            Trim(role, 1024),
+            Trim(world, 1024),
+            Trim(recruiter, 1024),
+            listingId,
+            Trim(description, 4096));
+        return true;
+    }
+
+    private static string FindField(string[] lines, string prefix)
+'@ -replace "`r`n", "`n"
+
+          $newData = @'
+        data = new PartyFinderEmbedData(
+            Trim(duty, 256),
+            Trim(party, 1024),
+            Trim(role, 1024),
+            Trim(recruiter, 1024),
+            listingId,
+            Trim(description, 4096));
+        return true;
+    }
+
+    private static string CleanRoleDisplay(string role)
+    {
+        const string verifiedSuffix = " - open (verified locally)";
+        return role.EndsWith(verifiedSuffix, StringComparison.OrdinalIgnoreCase)
+            ? role[..^verifiedSuffix.Length].Trim()
+            : role;
+    }
+
+    private static string FindField(string[] lines, string prefix)
+'@ -replace "`r`n", "`n"
+
+          foreach ($pair in @(
+            @($oldRecord, $newRecord),
+            @($oldEmbed, $newEmbed),
+            @($oldParse, $newParse),
+            @($oldData, $newData)
+          )) {
+            if (-not $content.Contains($pair[0])) { throw "Expected DiscordNotifier block was not found." }
+            $content = $content.Replace($pair[0], $pair[1])
+          }
+
+          [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText("version.txt", "0.7.4.0`n", [System.Text.UTF8Encoding]::new($false))
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          architecture: x64
+
+      - name: Install Dalamud build files
+        shell: pwsh
+        run: |
+          $dalamudPath = Join-Path $env:APPDATA "XIVLauncher\addon\Hooks\dev"
+          $dalamudZip = Join-Path $env:RUNNER_TEMP "dalamud.zip"
+          New-Item -ItemType Directory -Force -Path $dalamudPath | Out-Null
+          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile $dalamudZip
+          Expand-Archive -Path $dalamudZip -DestinationPath $dalamudPath -Force
+
+      - name: Restore
+        run: dotnet restore .\PartyPing.csproj
+
+      - name: Build
+        run: dotnet build .\PartyPing.csproj -c Release -p:Platform=x64 --no-restore
+
+      - name: Commit verified cleanup
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add DiscordNotifier.cs version.txt
+          git commit -m "Clean up Discord PF card formatting"
+          git push origin HEAD:main
