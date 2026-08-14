@@ -3,6 +3,7 @@ using Dalamud.Game.Gui.PartyFinder.Types;
 using Dalamud.IoC;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace PartyPing;
 
@@ -136,6 +137,26 @@ public sealed partial class Plugin
 
         try
         {
+            var openedPfWindow = await Framework.Run(() =>
+            {
+                unsafe
+                {
+                    var agent = AgentLookingForGroup.Instance();
+                    if (agent is null)
+                        return false;
+
+                    var addon = GameGui.GetAddonByName<AtkUnitBase>("LookingForGroup", 1);
+                    if (addon is not null && addon->IsVisible)
+                        return false;
+
+                    agent->Show();
+                    return true;
+                }
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (openedPfWindow)
+                await Framework.DelayTicks(1, cancellationToken).ConfigureAwait(false);
+
             return await Framework.Run(() =>
             {
                 unsafe
@@ -211,8 +232,6 @@ public sealed partial class Plugin
         var removedCount = 0;
         var stateChanged = false;
 
-        // If the configured duty changes, old-duty posts are no longer valid and
-        // should disappear immediately instead of waiting to show up in a scan.
         foreach (var pair in activePfAlerts.ToArray())
         {
             if (FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
@@ -272,11 +291,6 @@ public sealed partial class Plugin
             newCount++;
         }
 
-        // The native PF response contains at most 50 entries. Below 50, absence is
-        // authoritative and we delete immediately. At 50, absence may only mean the
-        // listing was pushed beyond the visible result window, so require three
-        // consecutive misses before deleting. This prevents stale Discord posts from
-        // surviving forever while still avoiding deletion after one saturated scan.
         var completePage = listings.Count is > 0 and < LocalPfMaxListingsPerPage;
         var saturatedPage = listings.Count >= LocalPfMaxListingsPerPage;
         var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
