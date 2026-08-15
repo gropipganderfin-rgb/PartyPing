@@ -7,6 +7,7 @@ public sealed partial class Plugin
     private string partyTrackerRosterSignature = string.Empty;
     private string? partyTrackerMessageId;
     private string partyTrackerTransport = string.Empty;
+    private bool partyTrackerEndQueued;
 
     private sealed record PartyTrackerSnapshot(
         long PartyId,
@@ -78,8 +79,8 @@ public sealed partial class Plugin
 
         var members = memberLines.Count == 0
             ? "Party roster unavailable"
-            : string.Join('\n', memberLines);
-        var signature = $"{partyId}|{partySize}|{string.Join('|', signatureParts)}";
+            : string.Join("\n", memberLines);
+        var signature = $"{partyId}|{partySize}|{string.Join("|", signatureParts)}";
         var message =
             "## Party Tracker\n" +
             $"**Party:** {partySize}/8\n" +
@@ -100,7 +101,7 @@ public sealed partial class Plugin
         {
             if (newParty)
             {
-                PartyFillStatus = $"Party tracker: joined {snapshot.PartySize}/8 - clearing PF cards...";
+                PartyFillStatus = $"Party tracker: joined {snapshot.PartySize}/8 - clearing other PartyPing posts...";
 
                 await DiscordClearer.ClearAsync(Configuration, cancellationToken).ConfigureAwait(false);
                 activePfAlerts.Clear();
@@ -151,9 +152,13 @@ public sealed partial class Plugin
 
     private void QueuePartyTrackerEnd()
     {
+        if (partyTrackerEndQueued)
+            return;
+
         if (partyTrackerPartyId == 0 && string.IsNullOrWhiteSpace(partyTrackerMessageId))
             return;
 
+        partyTrackerEndQueued = true;
         partyTrackerPartyId = 0;
         partyTrackerRosterSignature = string.Empty;
         _ = EndPartyTrackerAsync(cancellation.Token);
@@ -191,6 +196,7 @@ public sealed partial class Plugin
         }
         finally
         {
+            partyTrackerEndQueued = false;
             partyTrackerGate.Release();
         }
     }
