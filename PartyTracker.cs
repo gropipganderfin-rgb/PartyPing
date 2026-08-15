@@ -1,32 +1,24 @@
 using System.Net;
 using System.Net.Http.Headers;
-using System.Text;
 using System.Text.Json;
 
 namespace PartyPing;
 
 public sealed partial class Plugin
 {
-    private const int PartyTrackerEmbedColor = 0x57F287;
+    private readonly object currentPartySync = new();
+    private readonly SemaphoreSlim currentPartyHighlightGate = new(1, 1);
 
-    private readonly SemaphoreSlim partyTrackerGate = new(1, 1);
-    private long partyTrackerPartyId;
-    private string partyTrackerRosterSignature = string.Empty;
-    private string? partyTrackerMessageId;
-    private bool partyTrackerEndQueued;
-
-    private sealed record PartyTrackerSnapshot(
-        long PartyId,
-        int PartySize,
-        string RosterSignature,
-        string Members);
+    private long currentPartyId;
+    private string currentPartyRecruiter = string.Empty;
+    private int currentPartySize;
+    private string currentHighlightedFingerprint = string.Empty;
 
     private void TrackJoinedPartyCard()
     {
         if (PartyList.IsAlliance)
         {
-            PartyFillStatus = "Party tracker: alliance ignored";
-            QueuePartyTrackerEnd();
+            UpdateCurrentPartyState(0, string.Empty, 0, "Current party: alliance ignored");
             return;
         }
 
@@ -35,311 +27,323 @@ public sealed partial class Plugin
 
         if (partySize <= 1 || partyId == 0)
         {
-            PartyFillStatus = "Party tracker: not in a party";
-            QueuePartyTrackerEnd();
+            UpdateCurrentPartyState(0, string.Empty, 0, "Current party: not in a party");
             return;
         }
 
-        PartyFillStatus = $"Party tracker: live {partySize}/8";
-
-        if (!Configuration.Enabled)
-            return;
-
-        if (!DiscordNotifier.HasBotTransport(Configuration))
-        {
-            PartyFillStatus = "Party tracker: configure the Discord bot first";
-            return;
-        }
-
-        var snapshot = CapturePartyTrackerSnapshot(partyId, partySize);
-        var newParty = partyTrackerPartyId != partyId;
-        var rosterChanged = !string.Equals(
-            partyTrackerRosterSignature,
-            snapshot.RosterSignature,
-            StringComparison.Ordinal);
-        var strayPfCards = activePfAlerts.Count > 0;
-
-        if (!newParty && !rosterChanged && !strayPfCards && !string.IsNullOrWhiteSpace(partyTrackerMessageId))
-            return;
-
-        partyTrackerPartyId = partyId;
-        partyTrackerRosterSignature = snapshot.RosterSignature;
-        _ = SyncPartyTrackerAsync(snapshot, newParty, cancellation.Token);
-    }
-
-    private PartyTrackerSnapshot CapturePartyTrackerSnapshot(long partyId, int partySize)
-    {
         var leaderIndex = PartyList.PartyLeaderIndex;
-        var memberLines = new List<string>();
-        var signatureParts = new List<string>();
-
-        for (var i = 0; i < PartyList.Length; i++)
+        if (leaderIndex >= (uint)partySize)
         {
-            var member = PartyList[i];
-            if (member is null)
-                continue;
-
-            var name = member.Name.TextValue.Trim();
-            var world = member.World.Value.Name.ToString();
-            var display = string.IsNullOrWhiteSpace(world)
-                ? name
-                : $"{name} @ {world}";
-            var leader = (uint)i == leaderIndex;
-
-            memberLines.Add(leader ? $"👑 {display}" : $"• {display}");
-            signatureParts.Add($"{member.ContentId}:{name}:{world}:{leader}");
+            UpdateCurrentPartyState(partyId, string.Empty, partySize, $"Current party: {partySize}/8 - waiting for leader data");
+            return;
         }
 
-        var members = memberLines.Count == 0
-            ? "Party roster unavailable"
-            : string.Join("\n", memberLines);
-        var signature = $"{partyId}|{partySize}|{string.Join("|", signatureParts)}";
+        var leader = PartyList[(int)leaderIndex];
+        if (leader is null)
+        {
+            UpdateCurrentPartyState(partyId, string.Empty, partySize, $"Current party: {partySize}/8 - waiting for leader data");
+            return;
+        }
 
-        return new PartyTrackerSnapshot(partyId, partySize, signature, members);
+        var leaderName = leader.Name.TextValue.Trim();
+        var leaderWorld = leader.World.Value.Name.ToString();
+        var recruiter = string.IsNullOrWhiteSpace(leaderWorld)
+            ? leaderName
+            : $"{leaderName} @ {leaderWorld}";
+
+        UpdateCurrentPartyState(
+            partyId,
+            recruiter,
+            partySize,
+            $"Current party: {partySize}/8 - highlighting matching PF card");
     }
 
-    private async Task SyncPartyTrackerAsync(
-        PartyTrackerSnapshot snapshot,
-        bool newParty,
-        CancellationToken cancellationToken)
+    private void UpdateCurrentPartyState(long partyId, string recruiter, int partySize, string status)
     {
-        await partyTrackerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        string oldRecruiter;
+        int oldSize;
+        long oldPartyId;
+
+        lock (currentPartySync)
+        {
+            oldPartyId = currentPartyId;
+            oldRecruiter = currentPartyRecruiter;
+            oldSize = currentPartySize;
+
+            currentPartyId = partyId;
+            currentPartyRecruiter = recruiter;
+            currentPartySize = partySize;
+        }
+
+        PartyFillStatus = status;
+
+        if (oldPartyId == partyId &&
+            oldSize == partySize &&
+            string.Equals(oldRecruiter, recruiter, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _ = SyncCurrentPartyHighlightAsync(cancellation.Token);
+    }
+
+    internal bool TryGetCurrentPartySize(string fingerprint, out int partySize)
+    {
+        lock (currentPartySync)
+        {
+            partySize = currentPartySize;
+            return currentPartyId != 0 &&
+                   currentPartySize > 1 &&
+                   !string.IsNullOrWhiteSpace(currentPartyRecruiter) &&
+                   FingerprintRecruiterEquals(fingerprint, currentPartyRecruiter);
+        }
+    }
+
+    internal bool IsCurrentPartyFingerprint(string fingerprint) =>
+        TryGetCurrentPartySize(fingerprint, out _);
+
+    internal bool IsInTrackedNormalParty()
+    {
+        lock (currentPartySync)
+            return currentPartyId != 0 && currentPartySize > 1;
+    }
+
+    private async Task SyncCurrentPartyHighlightAsync(CancellationToken cancellationToken)
+    {
+        await currentPartyHighlightGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            if (newParty)
+            string recruiter;
+            int partySize;
+            long partyId;
+
+            lock (currentPartySync)
             {
-                PartyFillStatus = $"Party tracker: joined {snapshot.PartySize}/8 - clearing other PartyPing posts...";
+                recruiter = currentPartyRecruiter;
+                partySize = currentPartySize;
+                partyId = currentPartyId;
+            }
 
-                for (var i = 0; i < 40 && LocalPfCheckInProgress; i++)
-                    await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+            var oldFingerprint = currentHighlightedFingerprint;
+            var newFingerprint = string.IsNullOrWhiteSpace(recruiter)
+                ? string.Empty
+                : activePfAlerts.Keys.FirstOrDefault(
+                    key => FingerprintRecruiterEquals(key, recruiter) &&
+                           FingerprintMatchesConfiguredDuty(key, Configuration.DutyNameContains)) ?? string.Empty;
 
-                await DiscordClearer.ClearAsync(Configuration, cancellationToken).ConfigureAwait(false);
-                activePfAlerts.Clear();
+            var changed = false;
+
+            if (!string.IsNullOrWhiteSpace(oldFingerprint) &&
+                !string.Equals(oldFingerprint, newFingerprint, StringComparison.Ordinal) &&
+                activePfAlerts.TryGetValue(oldFingerprint, out var oldAlert))
+            {
+                var normalMessage = SetCurrentPartyPresentation(oldAlert.LastContent, false, null);
+                if (!string.Equals(normalMessage, oldAlert.LastContent, StringComparison.Ordinal))
+                {
+                    await smsSender.EditAsync(
+                        Configuration,
+                        oldAlert.MessageId,
+                        normalMessage,
+                        cancellationToken,
+                        oldAlert.Transport).ConfigureAwait(false);
+                    oldAlert.LastContent = normalMessage;
+                    changed = true;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(newFingerprint) &&
+                activePfAlerts.TryGetValue(newFingerprint, out var currentAlert))
+            {
+                var highlightedMessage = SetCurrentPartyPresentation(
+                    currentAlert.LastContent,
+                    true,
+                    partySize);
+
+                if (!string.Equals(highlightedMessage, currentAlert.LastContent, StringComparison.Ordinal))
+                {
+                    await smsSender.EditAsync(
+                        Configuration,
+                        currentAlert.MessageId,
+                        highlightedMessage,
+                        cancellationToken,
+                        currentAlert.Transport).ConfigureAwait(false);
+                    currentAlert.LastContent = highlightedMessage;
+                    changed = true;
+                }
+
+                PartyFillStatus = $"Current party: {partySize}/8 - PF card highlighted";
+            }
+            else if (partyId != 0)
+            {
+                PartyFillStatus = $"Current party: {partySize}/8 - waiting for matching PF card";
+            }
+            else
+            {
+                PartyFillStatus = "Current party: not in a party";
+            }
+
+            currentHighlightedFingerprint = newFingerprint;
+
+            if (changed)
                 Configuration.Save();
-                partyTrackerMessageId = null;
-            }
-            else if (activePfAlerts.Count > 0)
+
+            // Once the party ends, immediately refresh PF so a highlighted card that
+            // closed or stopped matching while we were inside it can be cleaned up.
+            if (partyId == 0 &&
+                Configuration.Enabled &&
+                !string.IsNullOrWhiteSpace(Configuration.DutyNameContains) &&
+                !LocalPfCheckInProgress)
             {
-                foreach (var pair in activePfAlerts.ToArray())
-                    await DeleteLocalPfAlertAsync(pair.Key, pair.Value, Configuration, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (partyTrackerPartyId != snapshot.PartyId)
-                return;
-
-            if (string.IsNullOrWhiteSpace(partyTrackerMessageId))
-            {
-                partyTrackerMessageId = await SendPartyTrackerCardAsync(snapshot, cancellationToken).ConfigureAwait(false);
-                DiscordMessageStore.Add(Configuration, partyTrackerMessageId);
-                PartyFillStatus = $"Party tracker: live {snapshot.PartySize}/8";
-                return;
-            }
-
-            await EditPartyTrackerCardAsync(
-                partyTrackerMessageId,
-                snapshot,
-                cancellationToken).ConfigureAwait(false);
-
-            PartyFillStatus = $"Party tracker: live {snapshot.PartySize}/8 - updated";
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            PartyFillStatus = "Party tracker error: " + ex.Message;
-            Log.Warning(ex, "PartyPing joined-party tracker update failed");
-        }
-        finally
-        {
-            partyTrackerGate.Release();
-        }
-    }
-
-    private void QueuePartyTrackerEnd()
-    {
-        if (partyTrackerEndQueued)
-            return;
-
-        if (partyTrackerPartyId == 0 && string.IsNullOrWhiteSpace(partyTrackerMessageId))
-            return;
-
-        partyTrackerEndQueued = true;
-        partyTrackerPartyId = 0;
-        partyTrackerRosterSignature = string.Empty;
-        _ = EndPartyTrackerAsync(cancellation.Token);
-    }
-
-    private async Task EndPartyTrackerAsync(CancellationToken cancellationToken)
-    {
-        await partyTrackerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(partyTrackerMessageId))
-            {
-                await DeletePartyTrackerCardAsync(partyTrackerMessageId, cancellationToken).ConfigureAwait(false);
-                DiscordMessageStore.Remove(Configuration, partyTrackerMessageId);
-            }
-
-            partyTrackerMessageId = null;
-            PartyFillStatus = "Party tracker: not in a party";
-
-            if (Configuration.Enabled && !string.IsNullOrWhiteSpace(Configuration.DutyNameContains))
                 await CheckLocalPfNowAsync().ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
         catch (Exception ex)
         {
-            PartyFillStatus = "Party tracker cleanup failed: " + ex.Message;
-            Log.Warning(ex, "PartyPing could not remove joined-party tracker card");
+            PartyFillStatus = "Current party highlight error: " + ex.Message;
+            Log.Warning(ex, "PartyPing could not update the current-party PF highlight");
         }
         finally
         {
-            partyTrackerEndQueued = false;
-            partyTrackerGate.Release();
+            currentPartyHighlightGate.Release();
         }
     }
 
     internal void ResetPartyTrackerMessageAfterManualClear()
     {
-        partyTrackerMessageId = null;
-        partyTrackerRosterSignature = string.Empty;
+        currentHighlightedFingerprint = string.Empty;
     }
 
-    internal bool IsInTrackedNormalParty() =>
-        !PartyList.IsAlliance && PartyList.Length > 1 && PartyList.PartyId != 0;
-
-    private async Task<string> SendPartyTrackerCardAsync(
-        PartyTrackerSnapshot snapshot,
-        CancellationToken cancellationToken)
+    internal static string SetCurrentPartyPresentation(
+        string body,
+        bool highlighted,
+        int? livePartySize)
     {
-        using var http = new HttpClient();
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            BuildPartyTrackerMessageUrl(null))
+        var lines = body
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n')
+            .Where(line => !line.StartsWith("**Current party:**", StringComparison.Ordinal))
+            .ToList();
+
+        if (highlighted)
         {
-            Content = PartyTrackerJsonContent(snapshot),
-        };
-        AddPartyTrackerBotAuthorization(request);
+            var sourceIndex = lines.FindIndex(
+                line => line.StartsWith("**Source:**", StringComparison.Ordinal));
+            lines.Insert(sourceIndex >= 0 ? sourceIndex + 1 : 1, "**Current party:** Yes");
+        }
 
-        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Discord party tracker send returned {(int)response.StatusCode}: {responseBody}");
+        if (livePartySize is > 0)
+        {
+            var partyIndex = lines.FindIndex(
+                line => line.StartsWith("**Party:**", StringComparison.Ordinal));
 
-        using var json = JsonDocument.Parse(responseBody);
-        if (!json.RootElement.TryGetProperty("id", out var idElement))
-            throw new InvalidOperationException("Discord did not return a party tracker message ID.");
+            if (partyIndex >= 0)
+            {
+                var existing = lines[partyIndex]["**Party:**".Length..].Trim();
+                var slash = existing.IndexOf('/');
+                var total = slash >= 0 &&
+                            int.TryParse(existing[(slash + 1)..].Trim(), out var parsedTotal) &&
+                            parsedTotal > 0
+                    ? parsedTotal
+                    : 8;
 
-        var messageId = idElement.GetString();
-        return string.IsNullOrWhiteSpace(messageId)
-            ? throw new InvalidOperationException("Discord returned an empty party tracker message ID.")
-            : messageId;
+                lines[partyIndex] = $"**Party:** {livePartySize.Value}/{total}";
+            }
+        }
+
+        return string.Join('\n', lines).TrimEnd();
     }
 
-    private async Task EditPartyTrackerCardAsync(
-        string messageId,
-        PartyTrackerSnapshot snapshot,
-        CancellationToken cancellationToken)
+    private static bool FingerprintRecruiterEquals(string fingerprint, string recruiter)
     {
-        using var http = new HttpClient();
-        using var request = new HttpRequestMessage(
-            HttpMethod.Patch,
-            BuildPartyTrackerMessageUrl(messageId))
-        {
-            Content = PartyTrackerJsonContent(snapshot),
-        };
-        AddPartyTrackerBotAuthorization(request);
+        if (string.IsNullOrWhiteSpace(fingerprint) || string.IsNullOrWhiteSpace(recruiter))
+            return false;
 
-        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode == HttpStatusCode.NotFound)
+        var first = fingerprint.IndexOf('\u001f');
+        if (first < 0 || first + 1 >= fingerprint.Length)
+            return false;
+
+        var second = fingerprint.IndexOf('\u001f', first + 1);
+        var fingerprintRecruiter = second >= 0
+            ? fingerprint[(first + 1)..second]
+            : fingerprint[(first + 1)..];
+
+        return string.Equals(
+            fingerprintRecruiter.Trim(),
+            recruiter.Trim(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal async Task RemoveLegacyStandalonePartyTrackerCardsAsync(CancellationToken cancellationToken)
+    {
+        if (!DiscordNotifier.HasBotTransport(Configuration) ||
+            !ulong.TryParse(Configuration.DiscordChannelId?.Trim(), out var channelId) ||
+            channelId == 0 ||
+            string.IsNullOrWhiteSpace(Configuration.DiscordBotToken))
         {
-            partyTrackerMessageId = null;
             return;
         }
 
-        if (!response.IsSuccessStatusCode)
-        {
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            throw new InvalidOperationException($"Discord party tracker edit returned {(int)response.StatusCode}: {responseBody}");
-        }
-    }
+        var activeIds = activePfAlerts.Values
+            .Select(alert => alert.MessageId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.Ordinal);
 
-    private async Task DeletePartyTrackerCardAsync(
-        string messageId,
-        CancellationToken cancellationToken)
-    {
-        using var http = new HttpClient();
-        using var request = new HttpRequestMessage(
-            HttpMethod.Delete,
-            BuildPartyTrackerMessageUrl(messageId));
-        AddPartyTrackerBotAuthorization(request);
+        var candidates = DiscordMessageStore.Snapshot(Configuration)
+            .Where(id => !activeIds.Contains(id))
+            .ToArray();
 
-        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode == HttpStatusCode.NotFound)
+        if (candidates.Length == 0)
             return;
 
-        if (!response.IsSuccessStatusCode)
+        using var http = new HttpClient();
+
+        foreach (var messageId in candidates)
         {
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            throw new InvalidOperationException($"Discord party tracker delete returned {(int)response.StatusCode}: {responseBody}");
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var url = new Uri(
+                $"https://discord.com/api/v10/channels/{channelId}/messages/{Uri.EscapeDataString(messageId)}");
+
+            using var get = new HttpRequestMessage(HttpMethod.Get, url);
+            get.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bot",
+                Configuration.DiscordBotToken.Trim());
+
+            using var response = await http.SendAsync(get, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                DiscordMessageStore.Remove(Configuration, messageId);
+                continue;
+            }
+
+            if (!response.IsSuccessStatusCode)
+                continue;
+
+            var jsonText = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var json = JsonDocument.Parse(jsonText);
+
+            var isLegacyTracker =
+                json.RootElement.TryGetProperty("embeds", out var embeds) &&
+                embeds.ValueKind == JsonValueKind.Array &&
+                embeds.EnumerateArray().Any(embed =>
+                    embed.TryGetProperty("title", out var title) &&
+                    string.Equals(title.GetString(), "Party Tracker", StringComparison.Ordinal));
+
+            if (!isLegacyTracker)
+                continue;
+
+            using var delete = new HttpRequestMessage(HttpMethod.Delete, url);
+            delete.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bot",
+                Configuration.DiscordBotToken.Trim());
+            using var deleteResponse = await http.SendAsync(delete, cancellationToken).ConfigureAwait(false);
+
+            if (deleteResponse.IsSuccessStatusCode || deleteResponse.StatusCode == HttpStatusCode.NotFound)
+                DiscordMessageStore.Remove(Configuration, messageId);
         }
-    }
-
-    private Uri BuildPartyTrackerMessageUrl(string? messageId)
-    {
-        if (!ulong.TryParse(Configuration.DiscordChannelId?.Trim(), out var channelId) || channelId == 0)
-            throw new InvalidOperationException("Discord bot channel ID is invalid.");
-
-        var url = $"https://discord.com/api/v10/channels/{channelId}/messages";
-        if (!string.IsNullOrWhiteSpace(messageId))
-            url += "/" + Uri.EscapeDataString(messageId.Trim());
-
-        return new Uri(url);
-    }
-
-    private void AddPartyTrackerBotAuthorization(HttpRequestMessage request)
-    {
-        if (string.IsNullOrWhiteSpace(Configuration.DiscordBotToken))
-            throw new InvalidOperationException("Discord bot token is missing.");
-
-        request.Headers.Authorization = new AuthenticationHeaderValue(
-            "Bot",
-            Configuration.DiscordBotToken.Trim());
-    }
-
-    private static StringContent PartyTrackerJsonContent(PartyTrackerSnapshot snapshot)
-    {
-        var payload = new
-        {
-            content = string.Empty,
-            embeds = new[]
-            {
-                new
-                {
-                    title = "Party Tracker",
-                    color = PartyTrackerEmbedColor,
-                    fields = new object[]
-                    {
-                        new { name = "Party", value = $"{snapshot.PartySize}/8", inline = true },
-                        new { name = "Members", value = snapshot.Members, inline = false },
-                    },
-                },
-            },
-            components = Array.Empty<object>(),
-            allowed_mentions = new
-            {
-                parse = Array.Empty<string>(),
-            },
-        };
-
-        return new StringContent(
-            JsonSerializer.Serialize(payload),
-            Encoding.UTF8,
-            "application/json");
     }
 }
