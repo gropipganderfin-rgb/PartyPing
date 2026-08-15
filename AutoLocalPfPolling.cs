@@ -30,6 +30,10 @@ public sealed partial class Plugin
                 {
                     LocalPfStatus = $"Local PF: alerts disabled - next automatic check attempt in {delaySeconds}s";
                 }
+                else if (IsInTrackedNormalParty())
+                {
+                    LocalPfStatus = $"Local PF: paused while joined party tracker is active ({PartyList.Length}/8)";
+                }
                 else if (string.IsNullOrWhiteSpace(Configuration.DutyNameContains))
                 {
                     LocalPfStatus = $"Local PF: duty filter blank - tracked PF posts will be cleaned on the next cycle in {delaySeconds}s";
@@ -41,7 +45,7 @@ public sealed partial class Plugin
 
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken).ConfigureAwait(false);
 
-                if (!Configuration.Enabled)
+                if (!Configuration.Enabled || IsInTrackedNormalParty())
                     continue;
 
                 // CheckLocalPfNowAsync also handles a blank duty filter by deleting
