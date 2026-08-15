@@ -7,6 +7,7 @@ on:
     paths:
       - PartyTracker.cs
       - AutoLocalPfPolling.cs
+      - ConfigWindow.cs
       - version.txt
       - .github/workflows/verify-party-tracker.yml
 
