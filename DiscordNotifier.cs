@@ -28,7 +28,8 @@ internal sealed class DiscordNotifier : IDisposable
         string World,
         string Recruiter,
         string ListingId,
-        string Description);
+        string Description,
+        bool IsCurrentParty);
 
     internal static bool HasBotTransport(Configuration config) =>
         !string.IsNullOrWhiteSpace(config.DiscordBotToken) &&
@@ -274,8 +275,10 @@ internal sealed class DiscordNotifier : IDisposable
             var embed = new
             {
                 title = pf.Duty,
-                description = pf.Description,
-                color = PartyFinderEmbedColor,
+                description = pf.IsCurrentParty
+                    ? "⭐ **YOUR PARTY**\n\n" + pf.Description
+                    : pf.Description,
+                color = pf.IsCurrentParty ? 0x57F287 : PartyFinderEmbedColor,
                 fields = new object[]
                 {
                     new { name = "Party", value = pf.Party, inline = true },
@@ -298,13 +301,15 @@ internal sealed class DiscordNotifier : IDisposable
                                 style = 1,
                                 label = "Open in FFXIV",
                                 custom_id = OpenButtonPrefix + pf.ListingId,
+                                disabled = false,
                             },
                             new
                             {
                                 type = 2,
                                 style = 3,
-                                label = "Join Party",
+                                label = pf.IsCurrentParty ? "Joined" : "Join Party",
                                 custom_id = JoinButtonPrefix + pf.ListingId,
+                                disabled = pf.IsCurrentParty,
                             },
                         },
                     },
@@ -372,6 +377,10 @@ internal sealed class DiscordNotifier : IDisposable
         var world = FindField(lines, "**World:**");
         var recruiter = FindField(lines, "**Recruiter:**");
         var listingId = FindField(lines, "**Listing ID:**");
+        var isCurrentParty = string.Equals(
+            FindField(lines, "**Current party:**"),
+            "Yes",
+            StringComparison.OrdinalIgnoreCase);
 
         var descriptionIndex = Array.FindIndex(lines, x => x.Equals("### Party Finder Description", StringComparison.Ordinal));
         var description = descriptionIndex >= 0
@@ -391,7 +400,8 @@ internal sealed class DiscordNotifier : IDisposable
             Trim(world, 1024),
             Trim(recruiter, 1024),
             listingId,
-            Trim(description, 4096));
+            Trim(description, 4096),
+            isCurrentParty);
         return true;
     }
 

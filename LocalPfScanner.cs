@@ -255,10 +255,12 @@ public sealed partial class Plugin
                 continue;
 
             var matches = MatchesLocalPfListing(listing, config);
+            var isCurrentParty = TryGetCurrentPartySize(listing.Fingerprint, out var livePartySize);
+            var shouldKeep = matches || isCurrentParty;
 
             if (activePfAlerts.TryGetValue(listing.Fingerprint, out var activeAlert))
             {
-                if (!matches)
+                if (!shouldKeep)
                 {
                     if (await DeleteLocalPfAlertAsync(listing.Fingerprint, activeAlert, config, cancellationToken).ConfigureAwait(false))
                         removedCount++;
@@ -270,7 +272,11 @@ public sealed partial class Plugin
                 activeAlert.ExpiresAtUnixSeconds = listing.ExpiresAtUnixSeconds;
                 stateChanged = true;
 
-                var message = BuildLocalPfMessage(listing, config.RequiredRole);
+                var message = BuildLocalPfMessage(
+                    listing,
+                    config.RequiredRole,
+                    isCurrentParty,
+                    livePartySize);
 
                 // Existing cards created by the old incoming webhook cannot gain a
                 // real interactive button. Once bot mode is configured, replace them
@@ -323,11 +329,15 @@ public sealed partial class Plugin
                 continue;
             }
 
-            if (!matches)
+            if (!shouldKeep)
                 continue;
 
             matchingCount++;
-            var newMessage = BuildLocalPfMessage(listing, config.RequiredRole);
+            var newMessage = BuildLocalPfMessage(
+                listing,
+                config.RequiredRole,
+                isCurrentParty,
+                livePartySize);
             var result = await smsSender.SendTrackedAsync(config, newMessage, cancellationToken).ConfigureAwait(false);
             activePfAlerts[listing.Fingerprint] = new PersistedPfAlert
             {
@@ -356,6 +366,11 @@ public sealed partial class Plugin
             foreach (var pair in activePfAlerts.ToArray())
             {
                 if (seenFingerprints.Contains(pair.Key))
+                    continue;
+
+                // Keep the card for the party we are currently inside even if the
+                // public PF listing closes, fills, or falls outside the 50-result page.
+                if (IsCurrentPartyFingerprint(pair.Key))
                     continue;
 
                 if (!FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
@@ -464,18 +479,29 @@ public sealed partial class Plugin
         return duty.Contains(dutyNameContains.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string BuildLocalPfMessage(LocalPfListingSnapshot listing, RoleFilter role)
+    private static string BuildLocalPfMessage(
+        LocalPfListingSnapshot listing,
+        RoleFilter role,
+        bool isCurrentParty,
+        int livePartySize)
     {
         var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
         var cleaned = CleanDescription(listing.Description);
         var roleText = role == RoleFilter.AnyRole
             ? "Any role"
             : $"{role.DisplayName()} - open (verified locally)";
+        var shownPartySize = isCurrentParty && livePartySize > 0
+            ? livePartySize
+            : listing.FilledSlots;
+        var currentPartyMarker = isCurrentParty
+            ? "**Current party:** Yes\n"
+            : string.Empty;
 
         return
             $"## {listing.Duty}\n" +
             "**Source:** Local FFXIV Party Finder\n" +
-            $"**Party:** {listing.FilledSlots}/{listing.TotalSlots}\n" +
+            currentPartyMarker +
+            $"**Party:** {shownPartySize}/{listing.TotalSlots}\n" +
             $"**Open slots:** {openSlots}\n" +
             $"**Role filter:** {roleText}\n" +
             $"**World:** {listing.World}\n" +
