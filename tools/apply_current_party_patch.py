@@ -49,6 +49,11 @@ replace_exact(
 
 replace_exact(
     "DiscordNotifier.cs",
+    '''                                label = "Open in FFXIV",\n                                custom_id = OpenButtonPrefix + pf.ListingId,''',
+    '''                                label = "Open in FFXIV",\n                                custom_id = OpenButtonPrefix + pf.ListingId,\n                                disabled = false,''')
+
+replace_exact(
+    "DiscordNotifier.cs",
     '''                                style = 3,\n                                label = "Join Party",\n                                custom_id = JoinButtonPrefix + pf.ListingId,''',
     '''                                style = 3,\n                                label = pf.IsCurrentParty ? "Joined" : "Join Party",\n                                custom_id = JoinButtonPrefix + pf.ListingId,\n                                disabled = pf.IsCurrentParty,''')
 
