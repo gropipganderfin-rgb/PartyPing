@@ -53,3 +53,5 @@ jobs:
           git add LocalPfScanner.cs DiscordNotifier.cs version.txt
           git commit -m "Highlight the current party PF card"
           git push origin HEAD:highlight-current-party
+
+# retry: keep both Discord component objects the same anonymous type
