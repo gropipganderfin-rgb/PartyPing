@@ -6,6 +6,7 @@ public sealed partial class Plugin
     private const int LocalPfAutoPollMaximumSeconds = 60;
 
     private bool localPfAutoPollingStarted;
+    private bool joinedPartyTrackerStarted;
 
     internal void StartLocalPfAutoPolling()
     {
@@ -13,7 +14,45 @@ public sealed partial class Plugin
             return;
 
         localPfAutoPollingStarted = true;
+        StartJoinedPartyTrackerLoop();
         _ = RunLocalPfLoopAsync(cancellation.Token);
+    }
+
+    private void StartJoinedPartyTrackerLoop()
+    {
+        if (joinedPartyTrackerStarted)
+            return;
+
+        joinedPartyTrackerStarted = true;
+
+        // The old one-shot 8/8 notification is superseded by the live tracker card.
+        Configuration.NotifyWhenPartyFull = false;
+        _ = RunJoinedPartyTrackerLoopAsync(cancellation.Token);
+    }
+
+    private async Task RunJoinedPartyTrackerLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Framework.Run(() =>
+                {
+                    Configuration.NotifyWhenPartyFull = false;
+                    TrackJoinedPartyCard();
+                }, cancellationToken).ConfigureAwait(false);
+
+                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            PartyFillStatus = "Party tracker stopped: " + ex.Message;
+            Log.Error(ex, "PartyPing joined-party tracker stopped unexpectedly");
+        }
     }
 
     private async Task RunLocalPfLoopAsync(CancellationToken cancellationToken)
