@@ -25,8 +25,10 @@ public sealed partial class Plugin
 
         joinedPartyTrackerStarted = true;
 
-        // The old one-shot 8/8 notification is superseded by the live tracker card.
+        // The old one-shot 8/8 notification and standalone tracker card are
+        // superseded by highlighting the matching PF card in place.
         Configuration.NotifyWhenPartyFull = false;
+        _ = RemoveLegacyStandalonePartyTrackerCardsAsync(cancellation.Token);
         _ = RunJoinedPartyTrackerLoopAsync(cancellation.Token);
     }
 
@@ -50,8 +52,8 @@ public sealed partial class Plugin
         }
         catch (Exception ex)
         {
-            PartyFillStatus = "Party tracker stopped: " + ex.Message;
-            Log.Error(ex, "PartyPing joined-party tracker stopped unexpectedly");
+            PartyFillStatus = "Current party highlight stopped: " + ex.Message;
+            Log.Error(ex, "PartyPing current-party highlight stopped unexpectedly");
         }
     }
 
@@ -69,13 +71,13 @@ public sealed partial class Plugin
                 {
                     LocalPfStatus = $"Local PF: alerts disabled - next automatic check attempt in {delaySeconds}s";
                 }
-                else if (IsInTrackedNormalParty())
-                {
-                    LocalPfStatus = $"Local PF: paused while joined party tracker is active ({PartyList.Length}/8)";
-                }
                 else if (string.IsNullOrWhiteSpace(Configuration.DutyNameContains))
                 {
                     LocalPfStatus = $"Local PF: duty filter blank - tracked PF posts will be cleaned on the next cycle in {delaySeconds}s";
+                }
+                else if (IsInTrackedNormalParty())
+                {
+                    LocalPfStatus = $"Local PF: next automatic check in {delaySeconds}s - current party remains highlighted";
                 }
                 else
                 {
@@ -84,12 +86,11 @@ public sealed partial class Plugin
 
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken).ConfigureAwait(false);
 
-                if (!Configuration.Enabled || IsInTrackedNormalParty())
+                if (!Configuration.Enabled)
                     continue;
 
-                // CheckLocalPfNowAsync also handles a blank duty filter by deleting
-                // tracked PF posts, so do not skip the call solely because the filter
-                // has been cleared.
+                // Continue polling while in a party. The current party's card is kept
+                // highlighted, while every other matching PF card continues to update.
                 await CheckLocalPfNowAsync().ConfigureAwait(false);
             }
         }
