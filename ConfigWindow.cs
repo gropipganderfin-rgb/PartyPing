@@ -63,7 +63,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
             ImGui.EndCombo();
         }
-        ImGui.TextDisabled("Uses FFXIV's accepted job data for open slots. Alerts are removed when this role is no longer open.");
+        ImGui.TextDisabled("Uses FFXIV's accepted job data for open slots. Alerts are removed when this role is no longer open unless it is the party you are currently in.");
 
         var slots = Config.MinimumOpenSlots;
         if (ImGui.InputInt("Minimum open slots", ref slots))
@@ -74,22 +74,21 @@ public sealed class ConfigWindow : Window, IDisposable
 
         DrawSectionHeader("Local Party Finder polling");
 
-        var localCheckDisabled = plugin.LocalPfCheckInProgress || plugin.IsInTrackedNormalParty();
-        if (localCheckDisabled)
+        if (plugin.LocalPfCheckInProgress)
             ImGui.BeginDisabled();
 
         if (ImGui.Button("Check local PF now"))
             _ = plugin.CheckLocalPfNowAsync();
 
-        if (localCheckDisabled)
+        if (plugin.LocalPfCheckInProgress)
             ImGui.EndDisabled();
 
         ImGui.TextWrapped("PartyPing automatically polls FFXIV's High-End Duty Party Finder at a new random whole-second interval from 30 through 60 seconds after each cycle. The Party Finder window does not need to be open.");
-        ImGui.TextWrapped("The button above performs an immediate check. Matching posts are created or edited with current local data; posts are removed when the listing closes, fills, stops matching your description filters, falls below the minimum open slots, or no longer has your selected role open.");
+        ImGui.TextWrapped("Matching posts stay visible and continue updating while you are in a party. Posts are removed when they stop qualifying, except the PF belonging to your current party is retained until you leave.");
         ImGui.TextDisabled(plugin.LocalPfStatus);
 
-        DrawSectionHeader("Joined party tracker");
-        ImGui.TextWrapped("When you join a normal party, PartyPing clears its other tracked Discord posts and creates one live Party Tracker card. That same card is edited whenever someone joins or leaves. Party Finder polling pauses while the tracker is active. When you leave the party, the tracker is removed and Party Finder alerts resume.");
+        DrawSectionHeader("Current party highlight");
+        ImGui.TextWrapped("When you join a normal party, PartyPing keeps all matching PF cards visible and highlights the card belonging to your party. The highlighted card uses your live in-game party count, so it updates when someone joins or leaves. If your join fills the role you were filtering for or the listing disappears from public PF, your highlighted card is kept until you leave the party.");
         ImGui.TextDisabled(plugin.PartyFillStatus);
 
         DrawSectionHeader("Discord bot - interactive PF buttons");
@@ -128,14 +127,14 @@ public sealed class ConfigWindow : Window, IDisposable
         if (clearInProgress)
             ImGui.EndDisabled();
 
-        ImGui.TextDisabled("Deletes tracked PartyPing posts. If you are in a party, the live tracker is recreated; otherwise matching PF listings repopulate on the next poll.");
+        ImGui.TextDisabled("Deletes tracked PartyPing posts. Matching PF listings will repopulate on the next poll; your current party will be highlighted again if its PF card is available.");
         if (!string.IsNullOrWhiteSpace(clearStatus))
             ImGui.TextWrapped(clearStatus);
 
         ImGui.Spacing();
         DrawSectionHeader("Important");
-        ImGui.TextWrapped("PartyPing uses only data received directly from the FFXIV Party Finder. Automatic polling currently requests the High-End Duty category only and pauses while you are inside a duty, zoning, in a cutscene, or while the joined-party tracker is active.");
-        ImGui.TextWrapped("Interactive Discord buttons and the joined-party tracker card require the bot token and channel ID. PF button control also uses your Discord user ID restriction.");
+        ImGui.TextWrapped("PartyPing uses only data received directly from the FFXIV Party Finder. Automatic polling currently requests the High-End Duty category only and pauses while you are inside a duty, zoning, or in a cutscene.");
+        ImGui.TextWrapped("Interactive Discord buttons require the bot token, channel ID, and your user ID. Current-party highlighting uses the recruiter/party-leader identity from FFXIV to match your party back to its PF card.");
     }
 
     private async Task ClearDiscordMessagesAsync()
@@ -154,9 +153,7 @@ public sealed class ConfigWindow : Window, IDisposable
             {
                 plugin.ResetPfAlertStateAfterManualClear();
                 plugin.ResetPartyTrackerMessageAfterManualClear();
-                clearStatus = plugin.IsInTrackedNormalParty()
-                    ? $"Cleared {result.Removed} PartyPing Discord message(s). The live party tracker will be recreated automatically."
-                    : $"Cleared {result.Removed} PartyPing Discord message(s). Matching local PF listings will repopulate on the next poll.";
+                clearStatus = $"Cleared {result.Removed} PartyPing Discord message(s). Matching local PF listings will repopulate on the next poll.";
             }
             else
             {
