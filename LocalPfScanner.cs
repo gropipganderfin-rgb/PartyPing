@@ -198,12 +198,15 @@ public sealed partial class Plugin
             var recruiter = $"{recruiterName} @ {homeWorld}";
             var description = listing.Description.TextValue;
             var fingerprint = $"{duty}\u001f{recruiter}\u001f{currentWorld}";
-            // Only inspect seats that are currently open. Filled seats and padding must not count toward role availability.
-            var openSlotCount = Math.Max(0, listing.SlotsAvailable - listing.SlotsFilled);
-            var acceptedJobs = listing.Slots
-                .Skip(listing.SlotsFilled)
-                .Take(openSlotCount)
-                .SelectMany(slot => slot.Accepting)
+            // SlotFlags and JobsPresent use the same seat indexes. A seat is open
+            // when JobsPresent[index] is 0; filled seats are not guaranteed to be
+            // packed at the front of the array.
+            var slots = listing.Slots.ToArray();
+            var jobsPresent = listing.RawJobsPresent.ToArray();
+            var seatCount = Math.Min((int)listing.SlotsAvailable, slots.Length);
+            var acceptedJobs = Enumerable.Range(0, seatCount)
+                .Where(index => index >= jobsPresent.Length || jobsPresent[index] == 0)
+                .SelectMany(index => slots[index].Accepting)
                 .Distinct()
                 .ToArray();
             var expiresAt = DateTimeOffset.UtcNow
@@ -274,7 +277,14 @@ public sealed partial class Plugin
         var newCount = 0;
         var updatedCount = 0;
         var removedCount = 0;
+        var rejectionCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var stateChanged = false;
+
+        void CountRejection(string reason)
+        {
+            rejectionCounts.TryGetValue(reason, out var count);
+            rejectionCounts[reason] = count + 1;
+        }
 
         // If the configured duty changes, old-duty posts are no longer valid and
         // should disappear immediately instead of waiting to show up in a scan.
@@ -290,9 +300,15 @@ public sealed partial class Plugin
         foreach (var listing in listings)
         {
             if (!listing.Duty.Contains(config.DutyNameContains.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                CountRejection("duty");
                 continue;
+            }
 
-            var matches = MatchesLocalPfListing(listing, config);
+            var rejectionReason = GetLocalPfRejectionReason(listing, config);
+            var matches = rejectionReason is null;
+            if (rejectionReason is not null)
+                CountRejection(rejectionReason);
             var isCurrentParty = TryGetCurrentPartySize(listing.Fingerprint, out var livePartySize);
             var shouldKeep = matches || isCurrentParty;
 
@@ -445,28 +461,51 @@ public sealed partial class Plugin
                 ? "complete page; missing posts removed immediately"
                 : $"50-listing page; unseen posts removed after {SaturatedPageMissesBeforeRemoval} consecutive misses";
 
+        var rejectionSummary = rejectionCounts.Count == 0
+            ? "none"
+            : string.Join(", ", rejectionCounts
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => $"{pair.Key} {pair.Value}"));
+
         LocalPfStatus =
             $"Local PF: checked {DateTime.Now:t} - {listings.Count} High-End listings, " +
-            $"{matchingCount} matched, {newCount} new, {updatedCount} updated, {removedCount} removed ({completeness})";
+            $"{matchingCount} matched, {newCount} new, {updatedCount} updated, {removedCount} removed; " +
+            $"rejected: {rejectionSummary} ({completeness})";
     }
 
-    private static bool MatchesLocalPfListing(LocalPfListingSnapshot listing, Configuration config)
+    private static bool MatchesLocalPfListing(LocalPfListingSnapshot listing, Configuration config) =>
+        GetLocalPfRejectionReason(listing, config) is null;
+
+    private static string? GetLocalPfRejectionReason(LocalPfListingSnapshot listing, Configuration config)
     {
         if (!LocalPfNorthAmericanWorlds.Contains(listing.World))
-            return false;
+            return "world";
 
         if (listing.MinimumItemLevel == 999)
-            return false;
+            return "iLvl 999";
 
         var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
         if (openSlots < Math.Max(0, config.MinimumOpenSlots))
-            return false;
+            return "open slots";
 
         if (config.RequiredRole != RoleFilter.AnyRole &&
             !listing.AcceptedJobs.Any(job => config.RequiredRole.Matches(job)))
-            return false;
+            return "role";
 
-        return MatchesTextRules(listing.Duty, listing.Description, config);
+        var haystack = listing.Duty + "\n" + listing.Description;
+        var excludes = SplitKeywords(config.ExcludeKeywords);
+        if (excludes.Any(keyword => haystack.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            return "excluded keyword";
+
+        var includes = SplitKeywords(config.IncludeKeywords);
+        if (includes.Length == 0)
+            return null;
+
+        var includeMatches = config.RequireAllIncludeKeywords
+            ? includes.All(keyword => haystack.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            : includes.Any(keyword => haystack.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+
+        return includeMatches ? null : "include keyword";
     }
 
     private async Task<bool> DeleteLocalPfAlertAsync(

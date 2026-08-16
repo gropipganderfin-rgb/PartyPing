@@ -32,36 +32,61 @@ public sealed partial class Plugin
         }
 
         var leaderIndex = PartyList.PartyLeaderIndex;
-        if (leaderIndex >= (uint)partySize)
+        var identities = new List<(string Identity, ulong ContentId, bool IsLeader)>();
+
+        for (var i = 0; i < partySize; i++)
         {
-            UpdateCurrentPartyState(partyId, string.Empty, partySize, $"Current party: {partySize}/8 - waiting for leader data");
-            return;
+            var member = PartyList[i];
+            if (member is null)
+                continue;
+
+            var name = member.Name.TextValue.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            var world = member.World.Value.Name.ToString();
+            var identity = string.IsNullOrWhiteSpace(world)
+                ? name
+                : $"{name} @ {world}";
+            identities.Add((identity, member.ContentId, (uint)i == leaderIndex));
         }
 
-        var leader = PartyList[(int)leaderIndex];
-        if (leader is null)
+        var leaderIdentity = identities.FirstOrDefault(x => x.IsLeader);
+        var recruiter = leaderIdentity.Identity ?? string.Empty;
+
+        // Cross-world PF transitions can temporarily leave PartyLeaderIndex invalid.
+        // In that case, identify the recruiter by matching every current party member
+        // against the PF cards PartyPing is already tracking.
+        if (string.IsNullOrWhiteSpace(recruiter) ||
+            !activePfAlerts.Keys.Any(key => FingerprintRecruiterEquals(key, recruiter)))
         {
-            UpdateCurrentPartyState(partyId != 0 ? partyId : 1, string.Empty, partySize, $"Current party: {partySize}/8 - waiting for leader data");
-            return;
+            var matchedIdentity = identities
+                .Select(x => x.Identity)
+                .FirstOrDefault(identity => activePfAlerts.Keys.Any(key =>
+                    FingerprintRecruiterEquals(key, identity) &&
+                    FingerprintMatchesConfiguredDuty(key, Configuration.DutyNameContains)));
+
+            if (!string.IsNullOrWhiteSpace(matchedIdentity))
+                recruiter = matchedIdentity;
         }
+
+        var fallbackContentId = identities.FirstOrDefault(x => x.IsLeader).ContentId;
+        if (fallbackContentId == 0 && identities.Count > 0)
+            fallbackContentId = identities[0].ContentId;
 
         var effectivePartyId = partyId != 0
             ? partyId
-            : leader.ContentId != 0
-                ? unchecked((long)leader.ContentId)
+            : fallbackContentId != 0
+                ? unchecked((long)fallbackContentId)
                 : 1;
-
-        var leaderName = leader.Name.TextValue.Trim();
-        var leaderWorld = leader.World.Value.Name.ToString();
-        var recruiter = string.IsNullOrWhiteSpace(leaderWorld)
-            ? leaderName
-            : $"{leaderName} @ {leaderWorld}";
 
         UpdateCurrentPartyState(
             effectivePartyId,
             recruiter,
             partySize,
-            $"Current party: {partySize}/8 - highlighting matching PF card");
+            string.IsNullOrWhiteSpace(recruiter)
+                ? $"Current party: {partySize}/8 - detected; waiting to identify PF recruiter"
+                : $"Current party: {partySize}/8 - highlighting matching PF card");
     }
 
     private void UpdateCurrentPartyState(long partyId, string recruiter, int partySize, string status)
