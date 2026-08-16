@@ -23,7 +23,7 @@ public sealed partial class Plugin : IDalamudPlugin
 
     public Configuration Configuration { get; }
     internal string LastStatus { get; private set; } = "Idle";
-    internal string PartyFillStatus { get; private set; } = "Party fill: not in a party";
+    internal string PartyFillStatus { get; private set; } = "Current party: not in a party";
     internal string DiscordBotStatus => discordBotBridge.Status;
 
     private readonly WindowSystem windowSystem = new("PartyPing");
@@ -34,9 +34,6 @@ public sealed partial class Plugin : IDalamudPlugin
 
     private Dictionary<string, PersistedPfAlert> activePfAlerts => Configuration.ActivePfAlerts;
 
-    private long trackedPartyId;
-    private int lastPartySize;
-    private bool partyFullNotificationSent;
     private DateTime lastPartyCheckUtc = DateTime.MinValue;
 
     public Plugin()
@@ -141,75 +138,12 @@ public sealed partial class Plugin : IDalamudPlugin
 
         lastPartyCheckUtc = now;
         discordBotBridge.EnsureRunning(Configuration);
-
-    }
-
-    private void TrackPartyFill()
-    {
-        var partySize = PartyList.Length;
-        var partyId = PartyList.PartyId;
-
-        if (PartyList.IsAlliance)
-        {
-            PartyFillStatus = "Party fill: alliance ignored";
-            ResetPartyTracking();
-            return;
-        }
-
-        if (partySize <= 1 || partyId == 0)
-        {
-            PartyFillStatus = "Party fill: not in a party";
-            ResetPartyTracking();
-            return;
-        }
-
-        if (IsBoundByDuty())
-        {
-            PartyFillStatus = $"Party fill: {partySize}/8 - inside duty, not tracking";
-            lastPartySize = partySize;
-            return;
-        }
-
-        if (trackedPartyId != partyId)
-        {
-            trackedPartyId = partyId;
-            partyFullNotificationSent = false;
-            lastPartySize = partySize;
-            PartyFillStatus = $"Party fill: tracking {partySize}/8";
-        }
-        else if (partySize != lastPartySize)
-        {
-            lastPartySize = partySize;
-            PartyFillStatus = $"Party fill: tracking {partySize}/8";
-        }
-
-        if (!Configuration.Enabled || !Configuration.NotifyWhenPartyFull)
-            return;
-
-        if (partySize < 8 || partyFullNotificationSent)
-            return;
-
-        partyFullNotificationSent = true;
-        PartyFillStatus = "Party fill: 8/8 - notification sent";
-
-        _ = SendDiscordAsync(
-            "## Party Filled\n" +
-            "**Party:** 8/8\n" +
-            "Your party is full and ready to go."
-        );
     }
 
     private static bool IsBoundByDuty() =>
         Condition[ConditionFlag.BoundByDuty] ||
         Condition[ConditionFlag.BoundByDuty56] ||
         Condition[ConditionFlag.BoundByDuty95];
-
-    private void ResetPartyTracking()
-    {
-        trackedPartyId = 0;
-        lastPartySize = 0;
-        partyFullNotificationSent = false;
-    }
 
     private async Task SendDiscordAsync(string message)
     {
@@ -247,7 +181,8 @@ public sealed partial class Plugin : IDalamudPlugin
             : includes.Any(k => haystack.Contains(k, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string[] SplitKeywords(string raw) => NormalizeMatchText(raw)
+    private static string[] SplitKeywords(string raw) => (raw ?? string.Empty)
+        .Normalize(NormalizationForm.FormKC)
         .Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .Select(NormalizeMatchText)
         .Where(x => x.Length > 0)
