@@ -167,7 +167,7 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawDiscordTab()
     {
         ImGui.TextUnformatted("Interactive Discord cards");
-        ImGui.TextDisabled("Bot mode enables Open, Join, Ignore, Search ON, and Search OFF from Discord mobile.");
+        ImGui.TextDisabled("PF cards use Open, Join, and Ignore. Search ON/OFF are sent once in the startup control message.");
         ImGui.Spacing();
 
         EditSecretField("##BotToken", "Bot token", Config.DiscordBotToken, v => Config.DiscordBotToken = v, 256);

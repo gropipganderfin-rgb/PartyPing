@@ -24,6 +24,7 @@ internal sealed class DiscordBotBridge : IDisposable
     private CancellationTokenSource? runCancellation;
     private Task? runTask;
     private string configurationKey = string.Empty;
+    private bool startupControlSent;
     private bool disposed;
 
     internal DiscordBotBridge(
@@ -204,7 +205,14 @@ internal sealed class DiscordBotBridge : IDisposable
 
                 if (string.Equals(eventName, "READY", StringComparison.Ordinal))
                 {
-                    Status = "Discord bot: connected - Open / Join / Ignore / Search controls ready";
+                    Status = "Discord bot: connected - PF buttons + startup search controls ready";
+
+                    if (!startupControlSent)
+                    {
+                        await SendStartupControlMessageAsync(token, channelId, connectionToken).ConfigureAwait(false);
+                        startupControlSent = true;
+                    }
+
                     continue;
                 }
 
@@ -444,6 +452,67 @@ internal sealed class DiscordBotBridge : IDisposable
         {
             Status = "Discord bot: FFXIV join failed - " + ex.Message;
             Plugin.Log.Warning(ex, "PartyPing could not join PF listing {ListingId} after Discord acknowledgement", listingId);
+        }
+    }
+
+    private async Task SendStartupControlMessageAsync(
+        string token,
+        string channelId,
+        CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            content = "## PartyPing is online\nUse these controls to start or pause Party Finder searching from Discord.",
+            components = new object[]
+            {
+                new
+                {
+                    type = 1,
+                    components = new object[]
+                    {
+                        new
+                        {
+                            type = 2,
+                            style = 3,
+                            label = "Search ON",
+                            custom_id = SearchOnButtonId,
+                            disabled = false,
+                        },
+                        new
+                        {
+                            type = 2,
+                            style = 4,
+                            label = "Search OFF",
+                            custom_id = SearchOffButtonId,
+                            disabled = false,
+                        },
+                    },
+                },
+            },
+            allowed_mentions = new
+            {
+                parse = Array.Empty<string>(),
+            },
+        };
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{DiscordApiBase}/channels/{channelId}/messages")
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(payload),
+                Encoding.UTF8,
+                "application/json"),
+        };
+        request.Headers.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bot", token);
+
+        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Discord startup control message returned {(int)response.StatusCode}: {body[..Math.Min(body.Length, 220)]}");
         }
     }
 

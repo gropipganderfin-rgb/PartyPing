@@ -14,7 +14,7 @@ public sealed partial class Plugin
     private const int LocalPfMaxListingsPerPage = 50;
     private const int LocalPfMaximumPages = 10;
     private const int SaturatedPageMissesBeforeRemoval = 3;
-    private const int CurrentDiscordCardUiVersion = 2;
+    private const int CurrentDiscordCardUiVersion = 3;
     private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(2000);
     private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(1200);
