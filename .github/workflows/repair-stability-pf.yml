@@ -26,62 +26,19 @@ jobs:
           $scannerPath = 'LocalPfScanner.cs'
           $scanner = Get-Content $scannerPath -Raw
 
-          $oldRequestCall = @'
-            if (!RequestLocalPfHighEndListings())
-            {
-                LocalPfStatus = "Local PF: FFXIV rejected the Party Finder refresh request";
-                return;
-            }
-'@
-          $newRequestCall = @'
-            // Native FFXIV agent calls must run on the framework/game thread.
-            var requestAccepted = await Framework.Run(
-                RequestLocalPfHighEndListings,
-                cancellation.Token).ConfigureAwait(false);
+          $requestNeedle = '            if (!RequestLocalPfHighEndListings())'
+          if (-not $scanner.Contains($requestNeedle)) { throw 'PF request call not found' }
+          $requestReplacement = "            // Native FFXIV agent calls must run on the framework/game thread.`n            var requestAccepted = await Framework.Run(`n                RequestLocalPfHighEndListings,`n                cancellation.Token).ConfigureAwait(false);`n`n            if (!requestAccepted)"
+          $scanner = $scanner.Replace($requestNeedle, $requestReplacement)
 
-            if (!requestAccepted)
-            {
-                LocalPfStatus = "Local PF: FFXIV rejected the Party Finder refresh request";
-                return;
-            }
-'@
-          if (-not $scanner.Contains($oldRequestCall)) { throw 'PF request call block not found' }
-          $scanner = $scanner.Replace($oldRequestCall, $newRequestCall)
+          $nativeNeedle = '        return agent != null && agent->RequestCategoryListings(LocalPfHighEndDutyCategory);'
+          if (-not $scanner.Contains($nativeNeedle)) { throw 'PF native request line not found' }
+          $nativeReplacement = "        if (agent is null)`n            return false;`n`n        // Force a data-center, normal-party query so a World/Private PF tab`n        // cannot silently hide valid prog listings from PartyPing.`n        agent->SearchAreaTab = 0;`n        agent->GroupTypeTab = 0;`n`n        return agent->RequestCategoryListings(LocalPfHighEndDutyCategory);"
+          $scanner = $scanner.Replace($nativeNeedle, $nativeReplacement)
 
-          $oldRequestMethod = @'
-    private static unsafe bool RequestLocalPfHighEndListings()
-    {
-        var agent = AgentLookingForGroup.Instance();
-        return agent != null && agent->RequestCategoryListings(LocalPfHighEndDutyCategory);
-    }
-'@
-          $newRequestMethod = @'
-    private static unsafe bool RequestLocalPfHighEndListings()
-    {
-        var agent = AgentLookingForGroup.Instance();
-        if (agent is null)
-            return false;
-
-        // Always query the full data-center PF instead of inheriting a user's
-        // World/Private tab selection, which can silently hide valid prog parties.
-        agent->SearchAreaTab = 0; // Data Center
-        agent->GroupTypeTab = 0;  // Normal party
-
-        return agent->RequestCategoryListings(LocalPfHighEndDutyCategory);
-    }
-'@
-          if (-not $scanner.Contains($oldRequestMethod)) { throw 'PF request method block not found' }
-          $scanner = $scanner.Replace($oldRequestMethod, $newRequestMethod)
-
-          $scanner = $scanner.Replace(
-              'private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(5);',
-              'private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(8);')
-          $scanner = $scanner.Replace(
-              'private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(1500);',
-              'private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(2000);')
-          $scanner = $scanner.Replace(
-              'private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(900);',
-              'private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(1200);')
+          $scanner = $scanner.Replace('private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(5);', 'private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(8);')
+          $scanner = $scanner.Replace('private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(1500);', 'private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(2000);')
+          $scanner = $scanner.Replace('private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(900);', 'private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(1200);')
           Set-Content $scannerPath $scanner -NoNewline
 
           $pollingPath = 'AutoLocalPfPolling.cs'
@@ -90,140 +47,8 @@ jobs:
           $polling = $polling.Replace('TimeSpan.FromMilliseconds(500)', 'TimeSpan.FromMilliseconds(1000)')
           Set-Content $pollingPath $polling -NoNewline
 
-          @'
-using FFXIVClientStructs.FFXIV.Client.UI.Info;
-
-namespace PartyPing;
-
-public sealed partial class Plugin
-{
-    private unsafe void TrackJoinedPartyCardRobust()
-    {
-        if (TryTrackCrossRealmParty())
-            return;
-
-        TrackJoinedPartyCard();
-    }
-
-    private unsafe bool TryTrackCrossRealmParty()
-    {
-        // Avoid calling InfoProxyCrossRealm member functions from the tracker.
-        // Reading the already-populated proxy fields is enough and removes a
-        // native-call crash surface from a loop that runs for the whole session.
-        var proxy = InfoProxyCrossRealm.Instance();
-        if (proxy is null || !proxy->IsInCrossRealmParty || proxy->IsInAllianceRaid)
-            return false;
-
-        var availableGroups = proxy->CrossRealmGroups.Length;
-        var groupCount = Math.Clamp((int)proxy->GroupCount, 0, availableGroups);
-        if (groupCount <= 0)
-            return false;
-
-        var groupIndex = Math.Clamp((int)proxy->LocalPlayerGroupIndex, 0, groupCount - 1);
-        var group = proxy->CrossRealmGroups[groupIndex];
-
-        var identities = new List<(string Name, ulong ContentId, bool IsLeader)>();
-        var scanCount = Math.Min(8, group.GroupMembers.Length);
-        for (var i = 0; i < scanCount; i++)
-        {
-            var member = group.GroupMembers[i];
-            if (member.ContentId == 0)
-                continue;
-
-            var name = member.NameString.Trim();
-            if (string.IsNullOrWhiteSpace(name))
-                continue;
-
-            identities.Add((name, member.ContentId, member.IsPartyLeader));
-        }
-
-        var memberCount = identities.Count;
-        if (memberCount <= 1)
-            return false;
-
-        var leader = identities.FirstOrDefault(x => x.IsLeader);
-        var recruiter = ResolveTrackedRecruiter(leader.Name);
-
-        if (string.IsNullOrWhiteSpace(recruiter))
-        {
-            foreach (var identity in identities)
-            {
-                recruiter = ResolveTrackedRecruiter(identity.Name);
-                if (!string.IsNullOrWhiteSpace(recruiter))
-                    break;
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(recruiter))
-            recruiter = leader.Name ?? string.Empty;
-
-        var fallbackContentId = leader.ContentId;
-        if (fallbackContentId == 0 && identities.Count > 0)
-            fallbackContentId = identities[0].ContentId;
-
-        var effectivePartyId = fallbackContentId != 0
-            ? unchecked((long)fallbackContentId)
-            : 1;
-
-        UpdateCurrentPartyState(
-            effectivePartyId,
-            recruiter,
-            memberCount,
-            string.IsNullOrWhiteSpace(recruiter)
-                ? $"Current cross-world party: {memberCount}/8 - detected; waiting for recruiter data"
-                : $"Current cross-world party: {memberCount}/8 - detected");
-
-        return true;
-    }
-
-    private string ResolveTrackedRecruiter(string? playerName)
-    {
-        if (string.IsNullOrWhiteSpace(playerName))
-            return string.Empty;
-
-        var fingerprint = activePfAlerts.Keys.FirstOrDefault(key =>
-            FingerprintRecruiterNameEquals(key, playerName) &&
-            FingerprintMatchesConfiguredDuty(key, Configuration.DutyNameContains));
-
-        return string.IsNullOrWhiteSpace(fingerprint)
-            ? string.Empty
-            : ExtractFingerprintRecruiter(fingerprint);
-    }
-
-    private static bool FingerprintRecruiterNameEquals(string fingerprint, string recruiterOrName)
-    {
-        if (string.IsNullOrWhiteSpace(fingerprint) || string.IsNullOrWhiteSpace(recruiterOrName))
-            return false;
-
-        var fingerprintRecruiter = ExtractFingerprintRecruiter(fingerprint);
-        if (string.IsNullOrWhiteSpace(fingerprintRecruiter))
-            return false;
-
-        return string.Equals(
-            ExtractPlayerName(fingerprintRecruiter),
-            ExtractPlayerName(recruiterOrName),
-            StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string ExtractFingerprintRecruiter(string fingerprint)
-    {
-        var first = fingerprint.IndexOf('\u001f');
-        if (first < 0 || first + 1 >= fingerprint.Length)
-            return string.Empty;
-
-        var second = fingerprint.IndexOf('\u001f', first + 1);
-        return (second >= 0
-            ? fingerprint[(first + 1)..second]
-            : fingerprint[(first + 1)..]).Trim();
-    }
-
-    private static string ExtractPlayerName(string identity)
-    {
-        var marker = identity.IndexOf(" @ ", StringComparison.Ordinal);
-        return (marker >= 0 ? identity[..marker] : identity).Trim();
-    }
-}
-'@ | Set-Content 'CrossRealmPartyTracker.cs' -NoNewline
+          $crossRealmBase64 = 'dXNpbmcgRkZYSVZDbGllbnRTdHJ1Y3RzLkZGWElWLkNsaWVudC5VSS5JbmZvOwoKbmFtZXNwYWNlIFBhcnR5UGluZzsKCnB1YmxpYyBzZWFsZWQgcGFydGlhbCBjbGFzcyBQbHVnaW4KewogICAgcHJpdmF0ZSB1bnNhZmUgdm9pZCBUcmFja0pvaW5lZFBhcnR5Q2FyZFJvYnVzdCgpCiAgICB7CiAgICAgICAgaWYgKFRyeVRyYWNrQ3Jvc3NSZWFsbVBhcnR5KCkpCiAgICAgICAgICAgIHJldHVybjsKCiAgICAgICAgVHJhY2tKb2luZWRQYXJ0eUNhcmQoKTsKICAgIH0KCiAgICBwcml2YXRlIHVuc2FmZSBib29sIFRyeVRyYWNrQ3Jvc3NSZWFsbVBhcnR5KCkKICAgIHsKICAgICAgICAvLyBBdm9pZCBjYWxsaW5nIEluZm9Qcm94eUNyb3NzUmVhbG0gbWVtYmVyIGZ1bmN0aW9ucyBmcm9tIHRoZSB0cmFja2VyLgogICAgICAgIC8vIFJlYWRpbmcgdGhlIGFscmVhZHktcG9wdWxhdGVkIHByb3h5IGZpZWxkcyByZW1vdmVzIGEgbmF0aXZlLWNhbGwgY3Jhc2gKICAgICAgICAvLyBzdXJmYWNlIGZyb20gYSBsb29wIHRoYXQgcnVucyBmb3IgdGhlIHdob2xlIHNlc3Npb24uCiAgICAgICAgdmFyIHByb3h5ID0gSW5mb1Byb3h5Q3Jvc3NSZWFsbS5JbnN0YW5jZSgpOwogICAgICAgIGlmIChwcm94eSBpcyBudWxsIHx8ICFwcm94eS0+SXNJbkNyb3NzUmVhbG1QYXJ0eSB8fCBwcm94eS0+SXNJbkFsbGlhbmNlUmFpZCkKICAgICAgICAgICAgcmV0dXJuIGZhbHNlOwoKICAgICAgICB2YXIgYXZhaWxhYmxlR3JvdXBzID0gcHJveHktPkNyb3NzUmVhbG1Hcm91cHMuTGVuZ3RoOwogICAgICAgIHZhciBncm91cENvdW50ID0gTWF0aC5DbGFtcCgoaW50KXByb3h5LT5Hcm91cENvdW50LCAwLCBhdmFpbGFibGVHcm91cHMpOwogICAgICAgIGlmIChncm91cENvdW50IDw9IDApCiAgICAgICAgICAgIHJldHVybiBmYWxzZTsKCiAgICAgICAgdmFyIGdyb3VwSW5kZXggPSBNYXRoLkNsYW1wKChpbnQpcHJveHktPkxvY2FsUGxheWVyR3JvdXBJbmRleCwgMCwgZ3JvdXBDb3VudCAtIDEpOwogICAgICAgIHZhciBncm91cCA9IHByb3h5LT5Dcm9zc1JlYWxtR3JvdXBzW2dyb3VwSW5kZXhdOwoKICAgICAgICB2YXIgaWRlbnRpdGllcyA9IG5ldyBMaXN0PChzdHJpbmcgTmFtZSwgdWxvbmcgQ29udGVudElkLCBib29sIElzTGVhZGVyKT4oKTsKICAgICAgICB2YXIgc2NhbkNvdW50ID0gTWF0aC5NaW4oOCwgZ3JvdXAuR3JvdXBNZW1iZXJzLkxlbmd0aCk7CiAgICAgICAgZm9yICh2YXIgaSA9IDA7IGkgPCBzY2FuQ291bnQ7IGkrKykKICAgICAgICB7CiAgICAgICAgICAgIHZhciBtZW1iZXIgPSBncm91cC5Hcm91cE1lbWJlcnNbaV07CiAgICAgICAgICAgIGlmIChtZW1iZXIuQ29udGVudElkID09IDApCiAgICAgICAgICAgICAgICBjb250aW51ZTsKCiAgICAgICAgICAgIHZhciBuYW1lID0gbWVtYmVyLk5hbWVTdHJpbmcuVHJpbSgpOwogICAgICAgICAgICBpZiAoc3RyaW5nLklzTnVsbE9yV2hpdGVTcGFjZShuYW1lKSkKICAgICAgICAgICAgICAgIGNvbnRpbnVlOwoKICAgICAgICAgICAgaWRlbnRpdGllcy5BZGQoKG5hbWUsIG1lbWJlci5Db250ZW50SWQsIG1lbWJlci5Jc1BhcnR5TGVhZGVyKSk7CiAgICAgICAgfQoKICAgICAgICB2YXIgbWVtYmVyQ291bnQgPSBpZGVudGl0aWVzLkNvdW50OwogICAgICAgIGlmIChtZW1iZXJDb3VudCA8PSAxKQogICAgICAgICAgICByZXR1cm4gZmFsc2U7CgogICAgICAgIHZhciBsZWFkZXIgPSBpZGVudGl0aWVzLkZpcnN0T3JEZWZhdWx0KHggPT4geC5Jc0xlYWRlcik7CiAgICAgICAgdmFyIHJlY3J1aXRlciA9IFJlc29sdmVUcmFja2VkUmVjcnVpdGVyKGxlYWRlci5OYW1lKTsKCiAgICAgICAgaWYgKHN0cmluZy5Jc051bGxPcldoaXRlU3BhY2UocmVjcnVpdGVyKSkKICAgICAgICB7CiAgICAgICAgICAgIGZvcmVhY2ggKHZhciBpZGVudGl0eSBpbiBpZGVudGl0aWVzKQogICAgICAgICAgICB7CiAgICAgICAgICAgICAgICByZWNydWl0ZXIgPSBSZXNvbHZlVHJhY2tlZFJlY3J1aXRlcihpZGVudGl0eS5OYW1lKTsKICAgICAgICAgICAgICAgIGlmICghc3RyaW5nLklzTnVsbE9yV2hpdGVTcGFjZShyZWNydWl0ZXIpKQogICAgICAgICAgICAgICAgICAgIGJyZWFrOwogICAgICAgICAgICB9CiAgICAgICAgfQoKICAgICAgICBpZiAoc3RyaW5nLklzTnVsbE9yV2hpdGVTcGFjZShyZWNydWl0ZXIpKQogICAgICAgICAgICByZWNydWl0ZXIgPSBsZWFkZXIuTmFtZSA/PyBzdHJpbmcuRW1wdHk7CgogICAgICAgIHZhciBmYWxsYmFja0NvbnRlbnRJZCA9IGxlYWRlci5Db250ZW50SWQ7CiAgICAgICAgaWYgKGZhbGxiYWNrQ29udGVudElkID09IDAgJiYgaWRlbnRpdGllcy5Db3VudCA+IDApCiAgICAgICAgICAgIGZhbGxiYWNrQ29udGVudElkID0gaWRlbnRpdGllc1swXS5Db250ZW50SWQ7CgogICAgICAgIHZhciBlZmZlY3RpdmVQYXJ0eUlkID0gZmFsbGJhY2tDb250ZW50SWQgIT0gMAogICAgICAgICAgICA/IHVuY2hlY2tlZCgobG9uZylmYWxsYmFja0NvbnRlbnRJZCkKICAgICAgICAgICAgOiAxOwoKICAgICAgICBVcGRhdGVDdXJyZW50UGFydHlTdGF0ZSgKICAgICAgICAgICAgZWZmZWN0aXZlUGFydHlJZCwKICAgICAgICAgICAgcmVjcnVpdGVyLAogICAgICAgICAgICBtZW1iZXJDb3VudCwKICAgICAgICAgICAgc3RyaW5nLklzTnVsbE9yV2hpdGVTcGFjZShyZWNydWl0ZXIpCiAgICAgICAgICAgICAgICA/ICQiQ3VycmVudCBjcm9zcy13b3JsZCBwYXJ0eToge21lbWJlckNvdW50fS84IC0gZGV0ZWN0ZWQ7IHdhaXRpbmcgZm9yIHJlY3J1aXRlciBkYXRhIgogICAgICAgICAgICAgICAgOiAkIkN1cnJlbnQgY3Jvc3Mtd29ybGQgcGFydHk6IHttZW1iZXJDb3VudH0vOCAtIGRldGVjdGVkIik7CgogICAgICAgIHJldHVybiB0cnVlOwogICAgfQoKICAgIHByaXZhdGUgc3RyaW5nIFJlc29sdmVUcmFja2VkUmVjcnVpdGVyKHN0cmluZz8gcGxheWVyTmFtZSkKICAgIHsKICAgICAgICBpZiAoc3RyaW5nLklzTnVsbE9yV2hpdGVTcGFjZShwbGF5ZXJOYW1lKSkKICAgICAgICAgICAgcmV0dXJuIHN0cmluZy5FbXB0eTsKCiAgICAgICAgdmFyIGZpbmdlcnByaW50ID0gYWN0aXZlUGZBbGVydHMuS2V5cy5GaXJzdE9yRGVmYXVsdChrZXkgPT4KICAgICAgICAgICAgRmluZ2VycHJpbnRSZWNydWl0ZXJOYW1lRXF1YWxzKGtleSwgcGxheWVyTmFtZSkgJiYKICAgICAgICAgICAgRmluZ2VycHJpbnRNYXRjaGVzQ29uZmlndXJlZER1dHkoa2V5LCBDb25maWd1cmF0aW9uLkR1dHlOYW1lQ29udGFpbnMpKTsKCiAgICAgICAgcmV0dXJuIHN0cmluZy5Jc051bGxPcldoaXRlU3BhY2UoZmluZ2VycHJpbnQpCiAgICAgICAgICAgID8gc3RyaW5nLkVtcHR5CiAgICAgICAgICAgIDogRXh0cmFjdEZpbmdlcnByaW50UmVjcnVpdGVyKGZpbmdlcnByaW50KTsKICAgIH0KCiAgICBwcml2YXRlIHN0YXRpYyBib29sIEZpbmdlcnByaW50UmVjcnVpdGVyTmFtZUVxdWFscyhzdHJpbmcgZmluZ2VycHJpbnQsIHN0cmluZyByZWNydWl0ZXJPck5hbWUpCiAgICB7CiAgICAgICAgaWYgKHN0cmluZy5Jc051bGxPcldoaXRlU3BhY2UoZmluZ2VycHJpbnQpIHx8IHN0cmluZy5Jc051bGxPcldoaXRlU3BhY2UocmVjcnVpdGVyT3JOYW1lKSkKICAgICAgICAgICAgcmV0dXJuIGZhbHNlOwoKICAgICAgICB2YXIgZmluZ2VycHJpbnRSZWNydWl0ZXIgPSBFeHRyYWN0RmluZ2VycHJpbnRSZWNydWl0ZXIoZmluZ2VycHJpbnQpOwogICAgICAgIGlmIChzdHJpbmcuSXNOdWxsT3JXaGl0ZVNwYWNlKGZpbmdlcnByaW50UmVjcnVpdGVyKSkKICAgICAgICAgICAgcmV0dXJuIGZhbHNlOwoKICAgICAgICByZXR1cm4gc3RyaW5nLkVxdWFscygKICAgICAgICAgICAgRXh0cmFjdFBsYXllck5hbWUoZmluZ2VycHJpbnRSZWNydWl0ZXIpLAogICAgICAgICAgICBFeHRyYWN0UGxheWVyTmFtZShyZWNydWl0ZXJPck5hbWUpLAogICAgICAgICAgICBTdHJpbmdDb21wYXJpc29uLk9yZGluYWxJZ25vcmVDYXNlKTsKICAgIH0KCiAgICBwcml2YXRlIHN0YXRpYyBzdHJpbmcgRXh0cmFjdEZpbmdlcnByaW50UmVjcnVpdGVyKHN0cmluZyBmaW5nZXJwcmludCkKICAgIHsKICAgICAgICB2YXIgZmlyc3QgPSBmaW5nZXJwcmludC5JbmRleE9mKCdcdTAwMWYnKTsKICAgICAgICBpZiAoZmlyc3QgPCAwIHx8IGZpcnN0ICsgMSA+PSBmaW5nZXJwcmludC5MZW5ndGgpCiAgICAgICAgICAgIHJldHVybiBzdHJpbmcuRW1wdHk7CgogICAgICAgIHZhciBzZWNvbmQgPSBmaW5nZXJwcmludC5JbmRleE9mKCdcdTAwMWYnLCBmaXJzdCArIDEpOwogICAgICAgIHJldHVybiAoc2Vjb25kID49IDAKICAgICAgICAgICAgPyBmaW5nZXJwcmludFsoZmlyc3QgKyAxKS4uc2Vjb25kXQogICAgICAgICAgICA6IGZpbmdlcnByaW50WyhmaXJzdCArIDEpLi5dKS5UcmltKCk7CiAgICB9CgogICAgcHJpdmF0ZSBzdGF0aWMgc3RyaW5nIEV4dHJhY3RQbGF5ZXJOYW1lKHN0cmluZyBpZGVudGl0eSkKICAgIHsKICAgICAgICB2YXIgbWFya2VyID0gaWRlbnRpdHkuSW5kZXhPZigiIEAgIiwgU3RyaW5nQ29tcGFyaXNvbi5PcmRpbmFsKTsKICAgICAgICByZXR1cm4gKG1hcmtlciA+PSAwID8gaWRlbnRpdHlbLi5tYXJrZXJdIDogaWRlbnRpdHkpLlRyaW0oKTsKICAgIH0KfQo='
+          [IO.File]::WriteAllBytes('CrossRealmPartyTracker.cs', [Convert]::FromBase64String($crossRealmBase64))
 
           Set-Content 'version.txt' '0.7.12.0'
           Remove-Item '.github/workflows/repair-stability-pf.yml'
