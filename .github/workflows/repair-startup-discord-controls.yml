@@ -1,0 +1,34 @@
+name: Repair PartyPing startup Discord controls
+
+on:
+  push:
+    paths:
+      - '.github/workflows/repair-startup-discord-controls.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply repair
+        run: python tools/repair_startup_discord_controls.py
+
+      - name: Remove temporary repair files
+        run: |
+          rm tools/repair_startup_discord_controls.py
+          rm .github/workflows/repair-startup-discord-controls.yml
+
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Move search controls to startup Discord message"
+          git push
