@@ -147,7 +147,7 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawStatusTab()
     {
         ImGui.TextUnformatted("Party Finder scanner");
-        ImGui.TextDisabled("Automatic scan interval: random 30-60 seconds. Up to 10 PF pages per scan.");
+        ImGui.TextDisabled("Automatic scan interval: random 60-90 seconds. Up to 10 PF pages per scan.");
         ImGui.Spacing();
         ImGui.TextWrapped(plugin.LocalPfStatus);
 
