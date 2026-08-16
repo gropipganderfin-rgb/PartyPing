@@ -1,0 +1,36 @@
+name: Repair PartyPing multipage PF
+
+on:
+  push:
+    paths:
+      - '.github/workflows/repair-multipage-pf.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply multipage PF repair
+        run: python tools/repair_multipage_pf.py
+
+      - name: Remove temporary repair files
+        run: |
+          rm -f tools/repair_multipage_pf.py
+          rm -f .github/workflows/repair-multipage-pf.yml
+          rm -f x
+
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add multipage Party Finder scanning"
+          git push origin HEAD:main
