@@ -2,8 +2,8 @@ namespace PartyPing;
 
 public sealed partial class Plugin
 {
-    private const int LocalPfAutoPollMinimumSeconds = 30;
-    private const int LocalPfAutoPollMaximumSeconds = 60;
+    private const int LocalPfAutoPollMinimumSeconds = 60;
+    private const int LocalPfAutoPollMaximumSeconds = 90;
 
     private bool localPfAutoPollingStarted;
     private bool joinedPartyTrackerStarted;
