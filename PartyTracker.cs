@@ -25,7 +25,7 @@ public sealed partial class Plugin
         var partySize = PartyList.Length;
         var partyId = PartyList.PartyId;
 
-        if (partySize <= 1 || partyId == 0)
+        if (partySize <= 1)
         {
             UpdateCurrentPartyState(0, string.Empty, 0, "Current party: not in a party");
             return;
@@ -41,9 +41,15 @@ public sealed partial class Plugin
         var leader = PartyList[(int)leaderIndex];
         if (leader is null)
         {
-            UpdateCurrentPartyState(partyId, string.Empty, partySize, $"Current party: {partySize}/8 - waiting for leader data");
+            UpdateCurrentPartyState(partyId != 0 ? partyId : 1, string.Empty, partySize, $"Current party: {partySize}/8 - waiting for leader data");
             return;
         }
+
+        var effectivePartyId = partyId != 0
+            ? partyId
+            : leader.ContentId != 0
+                ? unchecked((long)leader.ContentId)
+                : 1;
 
         var leaderName = leader.Name.TextValue.Trim();
         var leaderWorld = leader.World.Value.Name.ToString();
@@ -52,7 +58,7 @@ public sealed partial class Plugin
             : $"{leaderName} @ {leaderWorld}";
 
         UpdateCurrentPartyState(
-            partyId,
+            effectivePartyId,
             recruiter,
             partySize,
             $"Current party: {partySize}/8 - highlighting matching PF card");
@@ -92,8 +98,7 @@ public sealed partial class Plugin
         lock (currentPartySync)
         {
             partySize = currentPartySize;
-            return currentPartyId != 0 &&
-                   currentPartySize > 1 &&
+            return currentPartySize > 1 &&
                    !string.IsNullOrWhiteSpace(currentPartyRecruiter) &&
                    FingerprintRecruiterEquals(fingerprint, currentPartyRecruiter);
         }
@@ -105,7 +110,7 @@ public sealed partial class Plugin
     internal bool IsInTrackedNormalParty()
     {
         lock (currentPartySync)
-            return currentPartyId != 0 && currentPartySize > 1;
+            return currentPartySize > 1;
     }
 
     private async Task SyncCurrentPartyHighlightAsync(CancellationToken cancellationToken)
@@ -174,7 +179,7 @@ public sealed partial class Plugin
 
                 PartyFillStatus = $"Current party: {partySize}/8 - PF card highlighted";
             }
-            else if (partyId != 0)
+            else if (partySize > 1)
             {
                 PartyFillStatus = $"Current party: {partySize}/8 - waiting for matching PF card";
             }
@@ -190,7 +195,7 @@ public sealed partial class Plugin
 
             // Once the party ends, immediately refresh PF so a highlighted card that
             // closed or stopped matching while we were inside it can be cleaned up.
-            if (partyId == 0 &&
+            if (partySize <= 1 &&
                 Configuration.Enabled &&
                 !string.IsNullOrWhiteSpace(Configuration.DutyNameContains) &&
                 !LocalPfCheckInProgress)

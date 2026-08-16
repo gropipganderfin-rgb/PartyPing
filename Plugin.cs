@@ -1,3 +1,4 @@
+using System.Text;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
@@ -141,15 +142,6 @@ public sealed partial class Plugin : IDalamudPlugin
         lastPartyCheckUtc = now;
         discordBotBridge.EnsureRunning(Configuration);
 
-        try
-        {
-            TrackPartyFill();
-        }
-        catch (Exception ex)
-        {
-            PartyFillStatus = "Party fill tracker error: " + ex.Message;
-            Log.Warning(ex, "PartyPing party fill tracker error");
-        }
     }
 
     private void TrackPartyFill()
@@ -240,7 +232,7 @@ public sealed partial class Plugin : IDalamudPlugin
 
     private static bool MatchesTextRules(string dutyName, string description, Configuration config)
     {
-        var haystack = dutyName + "\n" + description;
+        var haystack = NormalizeMatchText(dutyName + "\n" + description);
         var includes = SplitKeywords(config.IncludeKeywords);
         var excludes = SplitKeywords(config.ExcludeKeywords);
 
@@ -255,11 +247,41 @@ public sealed partial class Plugin : IDalamudPlugin
             : includes.Any(k => haystack.Contains(k, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string[] SplitKeywords(string raw) => raw
+    private static string[] SplitKeywords(string raw) => NormalizeMatchText(raw)
         .Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(NormalizeMatchText)
         .Where(x => x.Length > 0)
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
+
+    private static string NormalizeMatchText(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var normalized = value.Normalize(NormalizationForm.FormKC);
+        var builder = new StringBuilder(normalized.Length);
+        var pendingSpace = false;
+
+        foreach (var ch in normalized)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                pendingSpace = builder.Length > 0;
+                continue;
+            }
+
+            if (pendingSpace)
+            {
+                builder.Append(' ');
+                pendingSpace = false;
+            }
+
+            builder.Append(ch);
+        }
+
+        return builder.ToString();
+    }
 
     private static string CleanDescription(string description)
     {
