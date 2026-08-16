@@ -2,6 +2,7 @@ using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Gui.PartyFinder.Types;
 using Dalamud.IoC;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
@@ -11,6 +12,7 @@ public sealed partial class Plugin
 {
     private const byte LocalPfHighEndDutyCategory = 6;
     private const int LocalPfMaxListingsPerPage = 50;
+    private const int LocalPfMaximumPages = 10;
     private const int SaturatedPageMissesBeforeRemoval = 3;
     private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(2000);
@@ -38,7 +40,9 @@ public sealed partial class Plugin
 
     private readonly object localPfSync = new();
     private readonly Dictionary<ulong, LocalPfListingSnapshot> localPfReceived = new();
+    private readonly HashSet<ulong> localPfCurrentPageIds = new();
     private DateTime localPfLastReceiveUtc = DateTime.MinValue;
+    private volatile bool localPfIgnoreIncoming;
 
     private sealed record LocalPfListingSnapshot(
         ulong ListingId,
@@ -52,6 +56,19 @@ public sealed partial class Plugin
         JobFlags[] AcceptedJobs,
         ushort MinimumItemLevel,
         long ExpiresAtUnixSeconds);
+
+    private readonly record struct LocalPfUiState(
+        bool WasOpen,
+        byte SearchAreaTab,
+        byte CategoryTab,
+        byte GroupTypeTab);
+
+    private sealed record LocalPfScanResult(
+        LocalPfListingSnapshot[] Listings,
+        bool Complete,
+        int PagesScanned,
+        bool OpenedPagingUi,
+        string? FailureStatus);
 
     internal async Task CheckLocalPfNowAsync()
     {
@@ -83,33 +100,36 @@ public sealed partial class Plugin
         lock (localPfSync)
         {
             localPfReceived.Clear();
+            localPfCurrentPageIds.Clear();
             localPfLastReceiveUtc = DateTime.MinValue;
         }
 
         PartyFinderGui.ReceiveListing += OnLocalPfListingReceived;
 
+        LocalPfUiState? originalUiState = null;
+        var openedPagingUi = false;
+
         try
         {
-            LocalPfStatus = "Local PF: requesting High-End Duty listings from FFXIV...";
-
-            // Native FFXIV agent calls must run on the framework/game thread.
-            var requestAccepted = await Framework.Run(
-                RequestLocalPfHighEndListings,
+            originalUiState = await Framework.Run(
+                CaptureLocalPfUiState,
                 cancellation.Token).ConfigureAwait(false);
 
-            if (!requestAccepted)
+            LocalPfStatus = "Local PF: scanning High-End Duty Party Finder pages...";
+            var scan = await ScanLocalPfPagesAsync(originalUiState.Value, cancellation.Token).ConfigureAwait(false);
+            openedPagingUi = scan.OpenedPagingUi;
+
+            if (!string.IsNullOrWhiteSpace(scan.FailureStatus))
             {
-                LocalPfStatus = "Local PF: FFXIV rejected the Party Finder refresh request";
+                LocalPfStatus = scan.FailureStatus;
                 return;
             }
 
-            await WaitForLocalPfResponseAsync(cancellation.Token).ConfigureAwait(false);
-
-            LocalPfListingSnapshot[] listings;
-            lock (localPfSync)
-                listings = localPfReceived.Values.ToArray();
-
-            await ProcessLocalPfResultsAsync(listings, cancellation.Token).ConfigureAwait(false);
+            await ProcessLocalPfResultsAsync(
+                scan.Listings,
+                scan.Complete,
+                scan.PagesScanned,
+                cancellation.Token).ConfigureAwait(false);
 
             if (IsInTrackedNormalParty())
                 await SyncCurrentPartyHighlightAsync(cancellation.Token).ConfigureAwait(false);
@@ -126,6 +146,9 @@ public sealed partial class Plugin
         {
             PartyFinderGui.ReceiveListing -= OnLocalPfListingReceived;
             LocalPfCheckInProgress = false;
+
+            if (originalUiState is { } uiState)
+                await RestoreLocalPfUiStateAsync(uiState, openedPagingUi, cancellation.Token).ConfigureAwait(false);
         }
     }
 
@@ -145,12 +168,261 @@ public sealed partial class Plugin
         if (agent is null)
             return false;
 
-        // Force a data-center, normal-party query so a World/Private PF tab
-        // cannot silently hide valid prog listings from PartyPing.
+        // Force a data-center, normal-party High-End query. Setting CategoryTab as
+        // well keeps the native PF pager synchronized with the page-1 request so the
+        // addon's own Next Page event requests page 2 rather than another category.
         agent->SearchAreaTab = 0;
         agent->GroupTypeTab = 0;
+        agent->CategoryTab = LocalPfHighEndDutyCategory;
 
         return agent->RequestCategoryListings(LocalPfHighEndDutyCategory);
+    }
+
+    private static unsafe LocalPfUiState CaptureLocalPfUiState()
+    {
+        var agent = AgentLookingForGroup.Instance();
+        if (agent is null)
+            return default;
+
+        var addon = GameGui.GetAddonByName<AddonLookingForGroup>("LookingForGroup", 1);
+        var wasOpen = addon != null && addon->AtkUnitBase.IsVisible;
+        return new LocalPfUiState(wasOpen, agent->SearchAreaTab, agent->CategoryTab, agent->GroupTypeTab);
+    }
+
+    private void ResetLocalPfPageCapture()
+    {
+        lock (localPfSync)
+        {
+            localPfCurrentPageIds.Clear();
+            localPfLastReceiveUtc = DateTime.MinValue;
+        }
+    }
+
+    private async Task<LocalPfScanResult> ScanLocalPfPagesAsync(
+        LocalPfUiState originalUiState,
+        CancellationToken cancellationToken)
+    {
+        ResetLocalPfPageCapture();
+        var requestAccepted = await Framework.Run(
+            RequestLocalPfHighEndListings,
+            cancellationToken).ConfigureAwait(false);
+
+        if (!requestAccepted)
+        {
+            return new LocalPfScanResult(
+                [], false, 0, false,
+                "Local PF: FFXIV rejected the Party Finder refresh request");
+        }
+
+        var pageCount = await WaitForLocalPfPageAsync(cancellationToken).ConfigureAwait(false);
+        if (pageCount == 0)
+            return SnapshotLocalPfScan(false, 0, false);
+
+        // If page 1 is not full, the server has told us this is the complete result
+        // set and no UI pager is needed. This keeps ordinary scans fully background.
+        if (pageCount < LocalPfMaxListingsPerPage)
+            return SnapshotLocalPfScan(true, 1, false);
+
+        // FFXIV only sends one PF page at a time. A saturated page therefore needs
+        // the actual LookingForGroup pager. If the user did not already have PF open,
+        // create the addon, hide it without closing it, and invoke its registered page
+        // event directly. No hard-coded callback/event number is used.
+        var pagerReady = await EnsureLocalPfPagingUiAsync(originalUiState.WasOpen, cancellationToken).ConfigureAwait(false);
+        var openedPagingUi = pagerReady && !originalUiState.WasOpen;
+        if (!pagerReady)
+            return SnapshotLocalPfScan(false, 1, openedPagingUi);
+
+        // Opening the addon can generate its own organic listing request. It was
+        // ignored while the pager was being prepared; explicitly reload High-End page
+        // 1 now so the pager's native state and our captured page are synchronized.
+        ResetLocalPfPageCapture();
+        requestAccepted = await Framework.Run(
+            RequestLocalPfHighEndListings,
+            cancellationToken).ConfigureAwait(false);
+        if (!requestAccepted)
+            return SnapshotLocalPfScan(false, 1, openedPagingUi);
+
+        pageCount = await WaitForLocalPfPageAsync(cancellationToken).ConfigureAwait(false);
+        if (pageCount == 0)
+            return SnapshotLocalPfScan(false, 1, openedPagingUi);
+
+        var pagesScanned = 1;
+        var complete = pageCount < LocalPfMaxListingsPerPage;
+
+        while (!complete && pagesScanned < LocalPfMaximumPages)
+        {
+            ResetLocalPfPageCapture();
+
+            var nextPageResult = await Framework.Run(
+                RequestNextLocalPfPage,
+                cancellationToken).ConfigureAwait(false);
+
+            // 0 means the game's own Next Page button is disabled: the current page
+            // is the final page even if it contains exactly 50 listings.
+            if (nextPageResult == 0)
+            {
+                complete = true;
+                break;
+            }
+
+            // -1 means the pager addon/event disappeared or became invalid. Keep all
+            // data collected so far, but mark the scan partial so absence is not treated
+            // as authoritative.
+            if (nextPageResult < 0)
+                break;
+
+            pageCount = await WaitForLocalPfPageAsync(cancellationToken).ConfigureAwait(false);
+            if (pageCount == 0)
+                break;
+
+            pagesScanned++;
+            complete = pageCount < LocalPfMaxListingsPerPage;
+        }
+
+        return SnapshotLocalPfScan(complete, pagesScanned, openedPagingUi);
+    }
+
+    private LocalPfScanResult SnapshotLocalPfScan(bool complete, int pagesScanned, bool openedPagingUi)
+    {
+        LocalPfListingSnapshot[] listings;
+        lock (localPfSync)
+            listings = localPfReceived.Values.ToArray();
+
+        return new LocalPfScanResult(listings, complete, pagesScanned, openedPagingUi, null);
+    }
+
+    private async Task<bool> EnsureLocalPfPagingUiAsync(bool wasAlreadyOpen, CancellationToken cancellationToken)
+    {
+        if (wasAlreadyOpen)
+        {
+            return await Framework.Run(() =>
+            {
+                unsafe
+                {
+                    var addon = GameGui.GetAddonByName<AddonLookingForGroup>("LookingForGroup", 1);
+                    return addon != null && addon->AtkUnitBase.IsReady;
+                }
+            }, cancellationToken).ConfigureAwait(false);
+        }
+
+        localPfIgnoreIncoming = true;
+        try
+        {
+            var shown = await Framework.Run(() =>
+            {
+                unsafe
+                {
+                    var agent = AgentLookingForGroup.Instance();
+                    if (agent is null)
+                        return false;
+
+                    agent->Show();
+                    return true;
+                }
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (!shown)
+                return false;
+
+            for (var attempt = 0; attempt < 30; attempt++)
+            {
+                await Framework.DelayTicks(1, cancellationToken).ConfigureAwait(false);
+
+                var ready = await Framework.Run(() =>
+                {
+                    unsafe
+                    {
+                        var addon = GameGui.GetAddonByName<AddonLookingForGroup>("LookingForGroup", 1);
+                        if (addon == null || !addon->AtkUnitBase.IsReady)
+                            return false;
+
+                        // Keep the addon alive so its registered page-button event is valid,
+                        // but hide a PF window that PartyPing opened solely for pagination.
+                        addon->AtkUnitBase.Hide(true, false, 0);
+                        return true;
+                    }
+                }, cancellationToken).ConfigureAwait(false);
+
+                if (ready)
+                {
+                    await Task.Delay(LocalPfQuietPeriod, cancellationToken).ConfigureAwait(false);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            localPfIgnoreIncoming = false;
+            ResetLocalPfPageCapture();
+        }
+    }
+
+    // Return values: 1 = next page requested, 0 = already on final page, -1 = pager unavailable.
+    private static unsafe int RequestNextLocalPfPage()
+    {
+        var addon = GameGui.GetAddonByName<AddonLookingForGroup>("LookingForGroup", 1);
+        if (addon == null || !addon->AtkUnitBase.IsReady)
+            return -1;
+
+        var button = addon->NextPageButton;
+        if (button == null)
+            return -1;
+
+        if (!button->IsEnabled)
+            return 0;
+
+        var buttonNode = button->AtkComponentBase.OwnerNode;
+        if (buttonNode == null || buttonNode->AtkResNode.AtkEventManager.Event == null)
+            return -1;
+
+        var eventData = (AtkEvent*)buttonNode->AtkResNode.AtkEventManager.Event;
+        addon->AtkUnitBase.ReceiveEvent(
+            eventData->State.EventType,
+            (int)eventData->Param,
+            buttonNode->AtkResNode.AtkEventManager.Event);
+        return 1;
+    }
+
+    private async Task RestoreLocalPfUiStateAsync(
+        LocalPfUiState state,
+        bool openedPagingUi,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Framework.Run(() =>
+            {
+                unsafe
+                {
+                    var agent = AgentLookingForGroup.Instance();
+                    if (agent is null)
+                        return;
+
+                    if (openedPagingUi && !state.WasOpen)
+                    {
+                        agent->Hide();
+                        return;
+                    }
+
+                    if (!state.WasOpen)
+                        return;
+
+                    agent->SearchAreaTab = state.SearchAreaTab;
+                    agent->GroupTypeTab = state.GroupTypeTab;
+                    agent->CategoryTab = state.CategoryTab;
+                    agent->RequestCategoryListings(state.CategoryTab);
+                }
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "PartyPing could not restore the Party Finder UI after multipage scanning");
+        }
     }
 
     private async Task<bool> OpenLocalPfListingFromDiscordAsync(ulong listingId, CancellationToken cancellationToken)
@@ -202,7 +474,7 @@ public sealed partial class Plugin
 
     private void OnLocalPfListingReceived(IPartyFinderListing listing, IPartyFinderListingEventArgs args)
     {
-        if (!LocalPfCheckInProgress)
+        if (!LocalPfCheckInProgress || localPfIgnoreIncoming)
             return;
 
         try
@@ -245,6 +517,7 @@ public sealed partial class Plugin
             lock (localPfSync)
             {
                 localPfReceived[listing.Id] = snapshot;
+                localPfCurrentPageIds.Add(listing.Id);
                 localPfLastReceiveUtc = DateTime.UtcNow;
             }
         }
@@ -254,7 +527,7 @@ public sealed partial class Plugin
         }
     }
 
-    private async Task WaitForLocalPfResponseAsync(CancellationToken cancellationToken)
+    private async Task<int> WaitForLocalPfPageAsync(CancellationToken cancellationToken)
     {
         var startedUtc = DateTime.UtcNow;
 
@@ -266,7 +539,7 @@ public sealed partial class Plugin
             DateTime lastReceiveUtc;
             lock (localPfSync)
             {
-                count = localPfReceived.Count;
+                count = localPfCurrentPageIds.Count;
                 lastReceiveUtc = localPfLastReceiveUtc;
             }
 
@@ -275,13 +548,18 @@ public sealed partial class Plugin
                 elapsed >= LocalPfMinimumReceiveWindow &&
                 DateTime.UtcNow - lastReceiveUtc >= LocalPfQuietPeriod)
             {
-                return;
+                return count;
             }
         }
+
+        lock (localPfSync)
+            return localPfCurrentPageIds.Count;
     }
 
     private async Task ProcessLocalPfResultsAsync(
         IReadOnlyCollection<LocalPfListingSnapshot> listings,
+        bool completeScan,
+        int pagesScanned,
         CancellationToken cancellationToken)
     {
         var config = Configuration;
@@ -412,13 +690,13 @@ public sealed partial class Plugin
             newCount++;
         }
 
-        // The native PF response contains at most 50 entries. Below 50, absence is
-        // authoritative and we delete immediately. At 50, absence may only mean the
-        // listing was pushed beyond the visible result window, so require three
-        // consecutive misses before deleting. This prevents stale Discord posts from
-        // surviving forever while still avoiding deletion after one saturated scan.
-        var completePage = listings.Count is > 0 and < LocalPfMaxListingsPerPage;
-        var saturatedPage = listings.Count >= LocalPfMaxListingsPerPage;
+        // With multipage scanning, absence is authoritative only when the pager reached
+        // the final page. If paging stopped early (timeout, missing addon, or the 10-page
+        // safety cap), retain the old consecutive-miss protection instead of deleting
+        // a listing that may simply live on an unvisited page.
+        var hasResults = listings.Count > 0;
+        var authoritativeScan = hasResults && completeScan;
+        var partialScan = hasResults && !completeScan;
         var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
         if (listings.Count > 0)
@@ -434,9 +712,9 @@ public sealed partial class Plugin
                 if (!FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
                     continue;
 
-                var shouldRemove = completePage;
+                var shouldRemove = authoritativeScan;
 
-                if (saturatedPage)
+                if (partialScan)
                 {
                     pair.Value.MissedPolls++;
                     stateChanged = true;
@@ -459,11 +737,12 @@ public sealed partial class Plugin
         if (stateChanged)
             config.Save();
 
+        var pageText = pagesScanned == 1 ? "1 page" : $"{pagesScanned} pages";
         var completeness = listings.Count == 0
             ? "no response listings; existing posts kept"
-            : completePage
-                ? "complete page; missing posts removed immediately"
-                : $"50-listing page; unseen posts removed after {SaturatedPageMissesBeforeRemoval} consecutive misses";
+            : authoritativeScan
+                ? $"{pageText}, complete scan; missing posts removed immediately"
+                : $"{pageText}, partial scan; unseen posts removed after {SaturatedPageMissesBeforeRemoval} consecutive misses";
 
         var rejectionSummary = rejectionCounts.Count == 0
             ? "none"

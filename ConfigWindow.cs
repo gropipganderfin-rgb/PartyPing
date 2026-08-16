@@ -83,7 +83,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (plugin.LocalPfCheckInProgress)
             ImGui.EndDisabled();
 
-        ImGui.TextWrapped("PartyPing automatically polls FFXIV's High-End Duty Party Finder at a new random whole-second interval from 30 through 60 seconds after each cycle. The Party Finder window does not need to be open.");
+        ImGui.TextWrapped("PartyPing automatically polls FFXIV's High-End Duty Party Finder at a new random whole-second interval from 30 through 60 seconds after each cycle. If the first 50 results are saturated, it walks additional PF pages (up to 10) so listings beyond page 1 are included.");
         ImGui.TextWrapped("Matching posts stay visible and continue updating while you are in a party. Posts are removed when they stop qualifying, except the PF belonging to your current party is retained until you leave.");
         ImGui.TextWrapped("After each scan, the status below shows why received listings were rejected: duty, world, iLvl 999, open slots, role, excluded keyword, or missing include keyword.");
         ImGui.TextWrapped(plugin.LocalPfStatus);
