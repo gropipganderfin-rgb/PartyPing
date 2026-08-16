@@ -41,7 +41,7 @@ public sealed partial class Plugin
                 await Framework.Run(() =>
                 {
                     Configuration.NotifyWhenPartyFull = false;
-                    TrackJoinedPartyCard();
+                    TrackJoinedPartyCardRobust();
                 }, cancellationToken).ConfigureAwait(false);
 
                 await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);

@@ -125,7 +125,8 @@ public sealed partial class Plugin
             partySize = currentPartySize;
             return currentPartySize > 1 &&
                    !string.IsNullOrWhiteSpace(currentPartyRecruiter) &&
-                   FingerprintRecruiterEquals(fingerprint, currentPartyRecruiter);
+                   (FingerprintRecruiterEquals(fingerprint, currentPartyRecruiter) ||
+                    FingerprintRecruiterNameEquals(fingerprint, currentPartyRecruiter));
         }
     }
 
@@ -159,7 +160,8 @@ public sealed partial class Plugin
             var newFingerprint = string.IsNullOrWhiteSpace(recruiter)
                 ? string.Empty
                 : activePfAlerts.Keys.FirstOrDefault(
-                    key => FingerprintRecruiterEquals(key, recruiter) &&
+                    key => (FingerprintRecruiterEquals(key, recruiter) ||
+                            FingerprintRecruiterNameEquals(key, recruiter)) &&
                            FingerprintMatchesConfiguredDuty(key, Configuration.DutyNameContains)) ?? string.Empty;
 
             var changed = false;

@@ -12,7 +12,9 @@ public sealed partial class Plugin
     private const byte LocalPfHighEndDutyCategory = 6;
     private const int LocalPfMaxListingsPerPage = 50;
     private const int SaturatedPageMissesBeforeRemoval = 3;
-    private static readonly TimeSpan LocalPfReceiveWindow = TimeSpan.FromMilliseconds(2500);
+    private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(900);
 
     private static readonly HashSet<string> LocalPfNorthAmericanWorlds = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -36,6 +38,7 @@ public sealed partial class Plugin
 
     private readonly object localPfSync = new();
     private readonly Dictionary<ulong, LocalPfListingSnapshot> localPfReceived = new();
+    private DateTime localPfLastReceiveUtc = DateTime.MinValue;
 
     private sealed record LocalPfListingSnapshot(
         ulong ListingId,
@@ -78,7 +81,10 @@ public sealed partial class Plugin
 
         LocalPfCheckInProgress = true;
         lock (localPfSync)
+        {
             localPfReceived.Clear();
+            localPfLastReceiveUtc = DateTime.MinValue;
+        }
 
         PartyFinderGui.ReceiveListing += OnLocalPfListingReceived;
 
@@ -92,13 +98,16 @@ public sealed partial class Plugin
                 return;
             }
 
-            await Task.Delay(LocalPfReceiveWindow, cancellation.Token).ConfigureAwait(false);
+            await WaitForLocalPfResponseAsync(cancellation.Token).ConfigureAwait(false);
 
             LocalPfListingSnapshot[] listings;
             lock (localPfSync)
                 listings = localPfReceived.Values.ToArray();
 
             await ProcessLocalPfResultsAsync(listings, cancellation.Token).ConfigureAwait(false);
+
+            if (IsInTrackedNormalParty())
+                await SyncCurrentPartyHighlightAsync(cancellation.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -218,11 +227,43 @@ public sealed partial class Plugin
                 expiresAt);
 
             lock (localPfSync)
+            {
                 localPfReceived[listing.Id] = snapshot;
+                localPfLastReceiveUtc = DateTime.UtcNow;
+            }
         }
         catch (Exception ex)
         {
             Log.Debug(ex, "PartyPing could not parse a local PF listing");
+        }
+    }
+
+    private async Task WaitForLocalPfResponseAsync(CancellationToken cancellationToken)
+    {
+        var startedUtc = DateTime.UtcNow;
+
+        while (DateTime.UtcNow - startedUtc < LocalPfMaximumReceiveWindow)
+        {
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+
+            int count;
+            DateTime lastReceiveUtc;
+            lock (localPfSync)
+            {
+                count = localPfReceived.Count;
+                lastReceiveUtc = localPfLastReceiveUtc;
+            }
+
+            if (count >= LocalPfMaxListingsPerPage)
+                return;
+
+            var elapsed = DateTime.UtcNow - startedUtc;
+            if (count > 0 &&
+                elapsed >= LocalPfMinimumReceiveWindow &&
+                DateTime.UtcNow - lastReceiveUtc >= LocalPfQuietPeriod)
+            {
+                return;
+            }
         }
     }
 
@@ -255,10 +296,12 @@ public sealed partial class Plugin
                 continue;
 
             var matches = MatchesLocalPfListing(listing, config);
+            var isCurrentParty = TryGetCurrentPartySize(listing.Fingerprint, out _);
+            var shouldKeep = matches || isCurrentParty;
 
             if (activePfAlerts.TryGetValue(listing.Fingerprint, out var activeAlert))
             {
-                if (!matches)
+                if (!shouldKeep)
                 {
                     if (await DeleteLocalPfAlertAsync(listing.Fingerprint, activeAlert, config, cancellationToken).ConfigureAwait(false))
                         removedCount++;
@@ -323,7 +366,7 @@ public sealed partial class Plugin
                 continue;
             }
 
-            if (!matches)
+            if (!shouldKeep)
                 continue;
 
             matchingCount++;
@@ -356,6 +399,9 @@ public sealed partial class Plugin
             foreach (var pair in activePfAlerts.ToArray())
             {
                 if (seenFingerprints.Contains(pair.Key))
+                    continue;
+
+                if (IsCurrentPartyFingerprint(pair.Key))
                     continue;
 
                 if (!FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
@@ -399,9 +445,6 @@ public sealed partial class Plugin
 
     private static bool MatchesLocalPfListing(LocalPfListingSnapshot listing, Configuration config)
     {
-        if (!LocalPfNorthAmericanWorlds.Contains(listing.World))
-            return false;
-
         if (listing.MinimumItemLevel == 999)
             return false;
 
