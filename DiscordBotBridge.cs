@@ -11,10 +11,13 @@ internal sealed class DiscordBotBridge : IDisposable
     private const string OpenButtonPrefix = "partyping_open:";
     private const string JoinButtonPrefix = "partyping_join:";
     private const string IgnoreButtonPrefix = "partyping_ignore:";
+    private const string SearchOnButtonId = "partyping_search:on";
+    private const string SearchOffButtonId = "partyping_search:off";
     private const int GuildsIntent = 1;
 
     private readonly Func<ulong, CancellationToken, Task<bool>> openListing;
     private readonly Func<ulong, CancellationToken, Task<bool>> ignoreListing;
+    private readonly Func<bool, CancellationToken, Task> setSearchEnabled;
     private readonly HttpClient http = new();
     private readonly object stateLock = new();
 
@@ -25,10 +28,12 @@ internal sealed class DiscordBotBridge : IDisposable
 
     internal DiscordBotBridge(
         Func<ulong, CancellationToken, Task<bool>> openListing,
-        Func<ulong, CancellationToken, Task<bool>> ignoreListing)
+        Func<ulong, CancellationToken, Task<bool>> ignoreListing,
+        Func<bool, CancellationToken, Task> setSearchEnabled)
     {
         this.openListing = openListing;
         this.ignoreListing = ignoreListing;
+        this.setSearchEnabled = setSearchEnabled;
     }
 
     internal string Status { get; private set; } =
@@ -199,7 +204,7 @@ internal sealed class DiscordBotBridge : IDisposable
 
                 if (string.Equals(eventName, "READY", StringComparison.Ordinal))
                 {
-                    Status = "Discord bot: connected - Open / Join / Ignore buttons ready";
+                    Status = "Discord bot: connected - Open / Join / Ignore / Search controls ready";
                     continue;
                 }
 
@@ -253,14 +258,20 @@ internal sealed class DiscordBotBridge : IDisposable
             var isJoin = customId.StartsWith(JoinButtonPrefix, StringComparison.Ordinal);
             var isOpen = customId.StartsWith(OpenButtonPrefix, StringComparison.Ordinal);
             var isIgnore = customId.StartsWith(IgnoreButtonPrefix, StringComparison.Ordinal);
-            if (!isJoin && !isOpen && !isIgnore)
+            var isSearchOn = string.Equals(customId, SearchOnButtonId, StringComparison.Ordinal);
+            var isSearchOff = string.Equals(customId, SearchOffButtonId, StringComparison.Ordinal);
+            if (!isJoin && !isOpen && !isIgnore && !isSearchOn && !isSearchOff)
                 return;
 
-            Status = isJoin
-                ? "Discord bot: Join Party button received..."
-                : isIgnore
-                    ? "Discord bot: Ignore button received..."
-                    : "Discord bot: Open in FFXIV button received...";
+            Status = isSearchOn
+                ? "Discord bot: Search ON received..."
+                : isSearchOff
+                    ? "Discord bot: Search OFF received..."
+                    : isJoin
+                        ? "Discord bot: Join Party button received..."
+                        : isIgnore
+                            ? "Discord bot: Ignore button received..."
+                            : "Discord bot: Open in FFXIV button received...";
 
             if (!interaction.TryGetProperty("id", out var interactionIdElement) ||
                 !interaction.TryGetProperty("token", out var interactionTokenElement))
@@ -291,6 +302,22 @@ internal sealed class DiscordBotBridge : IDisposable
                     "This PartyPing button is restricted to its configured owner and channel.",
                     cancellationToken).ConfigureAwait(false);
                 Status = "Discord bot: rejected a button click from a different user/channel";
+                return;
+            }
+
+            if (isSearchOn || isSearchOff)
+            {
+                var enabled = isSearchOn;
+                await RespondAsync(
+                    interactionId,
+                    interactionToken,
+                    new { type = 6 },
+                    cancellationToken).ConfigureAwait(false);
+
+                Status = enabled
+                    ? "Discord bot: Search ON acknowledged..."
+                    : "Discord bot: Search OFF acknowledged...";
+                _ = SetSearchEnabledAfterAcknowledgementAsync(enabled, cancellationToken);
                 return;
             }
 
@@ -335,6 +362,25 @@ internal sealed class DiscordBotBridge : IDisposable
         {
             Status = "Discord bot: button failed - " + ex.Message;
             Plugin.Log.Warning(ex, "PartyPing could not process a Discord PF button interaction");
+        }
+    }
+
+    private async Task SetSearchEnabledAfterAcknowledgementAsync(bool enabled, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await setSearchEnabled(enabled, cancellationToken).ConfigureAwait(false);
+            Status = enabled
+                ? "Discord bot: connected - PF searching enabled"
+                : "Discord bot: connected - PF searching paused";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Status = "Discord bot: search control failed - " + ex.Message;
+            Plugin.Log.Warning(ex, "PartyPing could not change PF search state from Discord");
         }
     }
 

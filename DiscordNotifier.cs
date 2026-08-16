@@ -18,6 +18,8 @@ internal sealed class DiscordNotifier : IDisposable
     private const string OpenButtonPrefix = "partyping_open:";
     private const string JoinButtonPrefix = "partyping_join:";
     private const string IgnoreButtonPrefix = "partyping_ignore:";
+    private const string SearchOnButtonId = "partyping_search:on";
+    private const string SearchOffButtonId = "partyping_search:off";
 
     private readonly HttpClient http = new();
 
@@ -318,6 +320,22 @@ internal sealed class DiscordNotifier : IDisposable
                                 style = 2,
                                 label = "Ignore",
                                 custom_id = IgnoreButtonPrefix + pf.ListingId,
+                                disabled = false,
+                            },
+                            new
+                            {
+                                type = 2,
+                                style = 3,
+                                label = "Search ON",
+                                custom_id = SearchOnButtonId,
+                                disabled = false,
+                            },
+                            new
+                            {
+                                type = 2,
+                                style = 4,
+                                label = "Search OFF",
+                                custom_id = SearchOffButtonId,
                                 disabled = false,
                             },
                         },

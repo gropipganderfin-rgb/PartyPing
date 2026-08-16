@@ -48,7 +48,8 @@ public sealed partial class Plugin : IDalamudPlugin
 
         discordBotBridge = new DiscordBotBridge(
             OpenLocalPfListingFromDiscordAsync,
-            IgnoreLocalPfListingFromDiscordAsync);
+            IgnoreLocalPfListingFromDiscordAsync,
+            SetSearchEnabledFromDiscordAsync);
         discordBotBridge.EnsureRunning(Configuration);
 
         configWindow = new ConfigWindow(this);
@@ -86,6 +87,26 @@ public sealed partial class Plugin : IDalamudPlugin
 
     private void OnCommand(string command, string args) => ToggleConfig();
     public void ToggleConfig() => configWindow.Toggle();
+
+    private Task SetSearchEnabledFromDiscordAsync(bool enabled, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Configuration.Enabled = enabled;
+        Configuration.Save();
+
+        if (enabled)
+        {
+            LocalPfStatus = "Local PF: searching enabled from Discord - starting a scan now";
+            _ = CheckLocalPfNowAsync();
+        }
+        else
+        {
+            LocalPfStatus = "Local PF: searching paused from Discord";
+        }
+
+        return Task.CompletedTask;
+    }
 
     internal async Task SendTestAsync()
     {

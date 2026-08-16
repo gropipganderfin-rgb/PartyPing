@@ -66,7 +66,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
-        ImGui.TextDisabled(enabled ? "Discord PF alerts active" : "Alerts paused");
+        ImGui.TextDisabled(enabled ? "PF searching + Discord alerts active" : "PF searching paused");
 
         var buttonWidth = 125f;
         ImGui.SameLine(Math.Max(ImGui.GetCursorPosX() + 12f, ImGui.GetContentRegionAvail().X - buttonWidth));
@@ -167,7 +167,7 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawDiscordTab()
     {
         ImGui.TextUnformatted("Interactive Discord cards");
-        ImGui.TextDisabled("Bot mode enables Open in FFXIV, Join Party, and Ignore buttons.");
+        ImGui.TextDisabled("Bot mode enables Open, Join, Ignore, Search ON, and Search OFF from Discord mobile.");
         ImGui.Spacing();
 
         EditSecretField("##BotToken", "Bot token", Config.DiscordBotToken, v => Config.DiscordBotToken = v, 256);

@@ -14,6 +14,7 @@ public sealed partial class Plugin
     private const int LocalPfMaxListingsPerPage = 50;
     private const int LocalPfMaximumPages = 10;
     private const int SaturatedPageMissesBeforeRemoval = 3;
+    private const int CurrentDiscordCardUiVersion = 2;
     private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(2000);
     private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(1200);
@@ -77,7 +78,7 @@ public sealed partial class Plugin
 
         if (!Configuration.Enabled)
         {
-            LocalPfStatus = "Local PF: enable Discord alerts first";
+            LocalPfStatus = "Local PF: PF searching is paused";
             return;
         }
 
@@ -118,6 +119,12 @@ public sealed partial class Plugin
             LocalPfStatus = "Local PF: scanning High-End Duty Party Finder pages...";
             var scan = await ScanLocalPfPagesAsync(originalUiState.Value, cancellation.Token).ConfigureAwait(false);
             openedPagingUi = scan.OpenedPagingUi;
+
+            if (!Configuration.Enabled)
+            {
+                LocalPfStatus = "Local PF: searching paused from Discord";
+                return;
+            }
 
             if (!string.IsNullOrWhiteSpace(scan.FailureStatus))
             {
@@ -251,6 +258,9 @@ public sealed partial class Plugin
 
         while (!complete && pagesScanned < LocalPfMaximumPages)
         {
+            if (!Configuration.Enabled)
+                break;
+
             ResetLocalPfPageCapture();
 
             var nextPageResult = await Framework.Run(
@@ -660,6 +670,7 @@ public sealed partial class Plugin
                         activeAlert.SeparatorMessageId = replacement.SeparatorMessageId;
                         activeAlert.LastContent = message;
                         activeAlert.Transport = replacement.Transport;
+                        activeAlert.CardUiVersion = CurrentDiscordCardUiVersion;
                         updatedCount++;
                         continue;
                     }
@@ -669,7 +680,8 @@ public sealed partial class Plugin
                     }
                 }
 
-                if (!string.Equals(message, activeAlert.LastContent, StringComparison.Ordinal))
+                if (!string.Equals(message, activeAlert.LastContent, StringComparison.Ordinal) ||
+                    activeAlert.CardUiVersion != CurrentDiscordCardUiVersion)
                 {
                     await smsSender.EditAsync(
                         config,
@@ -678,6 +690,8 @@ public sealed partial class Plugin
                         cancellationToken,
                         activeAlert.Transport).ConfigureAwait(false);
                     activeAlert.LastContent = message;
+                    activeAlert.CardUiVersion = CurrentDiscordCardUiVersion;
+                    stateChanged = true;
                     updatedCount++;
                 }
 
@@ -698,6 +712,7 @@ public sealed partial class Plugin
                 MissedPolls = 0,
                 ExpiresAtUnixSeconds = listing.ExpiresAtUnixSeconds,
                 ListingId = listing.ListingId,
+                CardUiVersion = CurrentDiscordCardUiVersion,
                 Transport = result.Transport,
             };
             stateChanged = true;

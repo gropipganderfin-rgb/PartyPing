@@ -5,7 +5,7 @@ namespace PartyPing;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 10;
+    public int Version { get; set; } = 11;
 
     public bool Enabled { get; set; } = false;
     public ushort DutyId { get; set; } = 0;
@@ -56,6 +56,7 @@ public sealed class PersistedPfAlert
     public int MissedPolls { get; set; }
     public long ExpiresAtUnixSeconds { get; set; }
     public ulong ListingId { get; set; }
+    public int CardUiVersion { get; set; }
 
     // Empty means the alert predates transport tracking. Those messages are
     // migrated to the bot transport automatically on the next matching PF poll.
