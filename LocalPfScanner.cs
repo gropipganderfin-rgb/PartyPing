@@ -185,7 +185,7 @@ public sealed partial class Plugin
             return default;
 
         var addon = GameGui.GetAddonByName<AddonLookingForGroup>("LookingForGroup", 1);
-        var wasOpen = addon != null && addon->AtkUnitBase.IsVisible;
+        var wasOpen = addon != null && addon->AddonLookingForGroupBase.AtkUnitBase.IsVisible;
         return new LocalPfUiState(wasOpen, agent->SearchAreaTab, agent->CategoryTab, agent->GroupTypeTab);
     }
 
@@ -300,7 +300,7 @@ public sealed partial class Plugin
                 unsafe
                 {
                     var addon = GameGui.GetAddonByName<AddonLookingForGroup>("LookingForGroup", 1);
-                    return addon != null && addon->AtkUnitBase.IsReady;
+                    return addon != null && addon->AddonLookingForGroupBase.AtkUnitBase.IsReady;
                 }
             }, cancellationToken).ConfigureAwait(false);
         }
@@ -333,12 +333,12 @@ public sealed partial class Plugin
                     unsafe
                     {
                         var addon = GameGui.GetAddonByName<AddonLookingForGroup>("LookingForGroup", 1);
-                        if (addon == null || !addon->AtkUnitBase.IsReady)
+                        if (addon == null || !addon->AddonLookingForGroupBase.AtkUnitBase.IsReady)
                             return false;
 
                         // Keep the addon alive so its registered page-button event is valid,
                         // but hide a PF window that PartyPing opened solely for pagination.
-                        addon->AtkUnitBase.Hide(true, false, 0);
+                        addon->AddonLookingForGroupBase.AtkUnitBase.Hide(true, false, 0);
                         return true;
                     }
                 }, cancellationToken).ConfigureAwait(false);
@@ -363,7 +363,7 @@ public sealed partial class Plugin
     private static unsafe int RequestNextLocalPfPage()
     {
         var addon = GameGui.GetAddonByName<AddonLookingForGroup>("LookingForGroup", 1);
-        if (addon == null || !addon->AtkUnitBase.IsReady)
+        if (addon == null || !addon->AddonLookingForGroupBase.AtkUnitBase.IsReady)
             return -1;
 
         var button = addon->NextPageButton;
@@ -378,7 +378,7 @@ public sealed partial class Plugin
             return -1;
 
         var eventData = (AtkEvent*)buttonNode->AtkResNode.AtkEventManager.Event;
-        addon->AtkUnitBase.ReceiveEvent(
+        addon->AddonLookingForGroupBase.AtkUnitBase.ReceiveEvent(
             eventData->State.EventType,
             (int)eventData->Param,
             buttonNode->AtkResNode.AtkEventManager.Event);
