@@ -13,11 +13,17 @@ internal sealed class DiscordBotBridge : IDisposable
     private const string IgnoreButtonPrefix = "partyping_ignore:";
     private const string SearchOnButtonId = "partyping_search:on";
     private const string SearchOffButtonId = "partyping_search:off";
+    private const string SearchTermsButtonId = "partyping_search_terms";
+    private const string SearchTermsModalId = "partyping_search_terms_modal";
+    private const string IncludeTermsInputId = "partyping_include_terms";
+    private const string ExcludeTermsInputId = "partyping_exclude_terms";
     private const int GuildsIntent = 1;
 
     private readonly Func<ulong, CancellationToken, Task<bool>> openListing;
     private readonly Func<ulong, CancellationToken, Task<bool>> ignoreListing;
     private readonly Func<bool, CancellationToken, Task> setSearchEnabled;
+    private readonly Func<(string IncludeKeywords, string ExcludeKeywords)> getSearchTerms;
+    private readonly Func<string, string, CancellationToken, Task> setSearchTerms;
     private readonly HttpClient http = new();
     private readonly object stateLock = new();
 
@@ -30,11 +36,15 @@ internal sealed class DiscordBotBridge : IDisposable
     internal DiscordBotBridge(
         Func<ulong, CancellationToken, Task<bool>> openListing,
         Func<ulong, CancellationToken, Task<bool>> ignoreListing,
-        Func<bool, CancellationToken, Task> setSearchEnabled)
+        Func<bool, CancellationToken, Task> setSearchEnabled,
+        Func<(string IncludeKeywords, string ExcludeKeywords)> getSearchTerms,
+        Func<string, string, CancellationToken, Task> setSearchTerms)
     {
         this.openListing = openListing;
         this.ignoreListing = ignoreListing;
         this.setSearchEnabled = setSearchEnabled;
+        this.getSearchTerms = getSearchTerms;
+        this.setSearchTerms = setSearchTerms;
     }
 
     internal string Status { get; private set; } =
@@ -205,7 +215,7 @@ internal sealed class DiscordBotBridge : IDisposable
 
                 if (string.Equals(eventName, "READY", StringComparison.Ordinal))
                 {
-                    Status = "Discord bot: connected - PF buttons + startup search controls ready";
+                    Status = "Discord bot: connected - PF buttons + mobile search controls ready";
 
                     if (!startupControlSent)
                     {
@@ -250,7 +260,11 @@ internal sealed class DiscordBotBridge : IDisposable
     {
         try
         {
-            if (!interaction.TryGetProperty("type", out var typeElement) || typeElement.GetInt32() != 3)
+            if (!interaction.TryGetProperty("type", out var typeElement))
+                return;
+
+            var interactionType = typeElement.GetInt32();
+            if (interactionType != 3 && interactionType != 5)
                 return;
 
             if (!interaction.TryGetProperty("data", out var data) ||
@@ -263,28 +277,10 @@ internal sealed class DiscordBotBridge : IDisposable
             if (string.IsNullOrWhiteSpace(customId))
                 return;
 
-            var isJoin = customId.StartsWith(JoinButtonPrefix, StringComparison.Ordinal);
-            var isOpen = customId.StartsWith(OpenButtonPrefix, StringComparison.Ordinal);
-            var isIgnore = customId.StartsWith(IgnoreButtonPrefix, StringComparison.Ordinal);
-            var isSearchOn = string.Equals(customId, SearchOnButtonId, StringComparison.Ordinal);
-            var isSearchOff = string.Equals(customId, SearchOffButtonId, StringComparison.Ordinal);
-            if (!isJoin && !isOpen && !isIgnore && !isSearchOn && !isSearchOff)
-                return;
-
-            Status = isSearchOn
-                ? "Discord bot: Search ON received..."
-                : isSearchOff
-                    ? "Discord bot: Search OFF received..."
-                    : isJoin
-                        ? "Discord bot: Join Party button received..."
-                        : isIgnore
-                            ? "Discord bot: Ignore button received..."
-                            : "Discord bot: Open in FFXIV button received...";
-
             if (!interaction.TryGetProperty("id", out var interactionIdElement) ||
                 !interaction.TryGetProperty("token", out var interactionTokenElement))
             {
-                Status = "Discord bot: button payload was missing its interaction ID/token";
+                Status = "Discord bot: interaction payload was missing its interaction ID/token";
                 return;
             }
 
@@ -292,7 +288,7 @@ internal sealed class DiscordBotBridge : IDisposable
             var interactionToken = interactionTokenElement.GetString();
             if (string.IsNullOrWhiteSpace(interactionId) || string.IsNullOrWhiteSpace(interactionToken))
             {
-                Status = "Discord bot: button payload contained an empty interaction ID/token";
+                Status = "Discord bot: interaction payload contained an empty interaction ID/token";
                 return;
             }
 
@@ -307,11 +303,62 @@ internal sealed class DiscordBotBridge : IDisposable
                 await RespondEphemeralAsync(
                     interactionId,
                     interactionToken,
-                    "This PartyPing button is restricted to its configured owner and channel.",
+                    "This PartyPing control is restricted to its configured owner and channel.",
                     cancellationToken).ConfigureAwait(false);
-                Status = "Discord bot: rejected a button click from a different user/channel";
+                Status = "Discord bot: rejected an interaction from a different user/channel";
                 return;
             }
+
+            if (interactionType == 5)
+            {
+                if (!string.Equals(customId, SearchTermsModalId, StringComparison.Ordinal))
+                    return;
+
+                var includeKeywords = ReadModalTextValue(data, IncludeTermsInputId).Trim();
+                var excludeKeywords = ReadModalTextValue(data, ExcludeTermsInputId).Trim();
+
+                await setSearchTerms(includeKeywords, excludeKeywords, cancellationToken).ConfigureAwait(false);
+                await RespondEphemeralAsync(
+                    interactionId,
+                    interactionToken,
+                    "PartyPing search terms updated.\nInclude: " + DisplayFilter(includeKeywords) +
+                    "\nExclude: " + DisplayFilter(excludeKeywords),
+                    cancellationToken).ConfigureAwait(false);
+
+                Status = "Discord bot: connected - search terms updated";
+                return;
+            }
+
+            var isJoin = customId.StartsWith(JoinButtonPrefix, StringComparison.Ordinal);
+            var isOpen = customId.StartsWith(OpenButtonPrefix, StringComparison.Ordinal);
+            var isIgnore = customId.StartsWith(IgnoreButtonPrefix, StringComparison.Ordinal);
+            var isSearchOn = string.Equals(customId, SearchOnButtonId, StringComparison.Ordinal);
+            var isSearchOff = string.Equals(customId, SearchOffButtonId, StringComparison.Ordinal);
+            var isSearchTerms = string.Equals(customId, SearchTermsButtonId, StringComparison.Ordinal);
+            if (!isJoin && !isOpen && !isIgnore && !isSearchOn && !isSearchOff && !isSearchTerms)
+                return;
+
+            if (isSearchTerms)
+            {
+                var (includeKeywords, excludeKeywords) = getSearchTerms();
+                await RespondAsync(
+                    interactionId,
+                    interactionToken,
+                    CreateSearchTermsModal(includeKeywords, excludeKeywords),
+                    cancellationToken).ConfigureAwait(false);
+                Status = "Discord bot: search terms form opened";
+                return;
+            }
+
+            Status = isSearchOn
+                ? "Discord bot: Search ON received..."
+                : isSearchOff
+                    ? "Discord bot: Search OFF received..."
+                    : isJoin
+                        ? "Discord bot: Join Party button received..."
+                        : isIgnore
+                            ? "Discord bot: Ignore button received..."
+                            : "Discord bot: Open in FFXIV button received...";
 
             if (isSearchOn || isSearchOff)
             {
@@ -368,10 +415,88 @@ internal sealed class DiscordBotBridge : IDisposable
         }
         catch (Exception ex)
         {
-            Status = "Discord bot: button failed - " + ex.Message;
-            Plugin.Log.Warning(ex, "PartyPing could not process a Discord PF button interaction");
+            Status = "Discord bot: interaction failed - " + ex.Message;
+            Plugin.Log.Warning(ex, "PartyPing could not process a Discord interaction");
         }
     }
+
+    private static object CreateSearchTermsModal(string includeKeywords, string excludeKeywords) =>
+        new
+        {
+            type = 9,
+            data = new
+            {
+                custom_id = SearchTermsModalId,
+                title = "PartyPing Search Terms",
+                components = new object[]
+                {
+                    new
+                    {
+                        type = 1,
+                        components = new object[]
+                        {
+                            new
+                            {
+                                type = 4,
+                                custom_id = IncludeTermsInputId,
+                                label = "Include terms (comma-separated)",
+                                style = 1,
+                                required = false,
+                                max_length = 512,
+                                value = includeKeywords ?? string.Empty,
+                            },
+                        },
+                    },
+                    new
+                    {
+                        type = 1,
+                        components = new object[]
+                        {
+                            new
+                            {
+                                type = 4,
+                                custom_id = ExcludeTermsInputId,
+                                label = "Exclude terms (comma-separated)",
+                                style = 1,
+                                required = false,
+                                max_length = 512,
+                                value = excludeKeywords ?? string.Empty,
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+    private static string ReadModalTextValue(JsonElement data, string wantedCustomId)
+    {
+        if (!data.TryGetProperty("components", out var rows) || rows.ValueKind != JsonValueKind.Array)
+            return string.Empty;
+
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (!row.TryGetProperty("components", out var components) || components.ValueKind != JsonValueKind.Array)
+                continue;
+
+            foreach (var component in components.EnumerateArray())
+            {
+                if (!component.TryGetProperty("custom_id", out var idElement) ||
+                    !string.Equals(idElement.GetString(), wantedCustomId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                return component.TryGetProperty("value", out var valueElement)
+                    ? valueElement.GetString() ?? string.Empty
+                    : string.Empty;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string DisplayFilter(string value) =>
+        string.IsNullOrWhiteSpace(value) ? "(none)" : value;
 
     private async Task SetSearchEnabledAfterAcknowledgementAsync(bool enabled, CancellationToken cancellationToken)
     {
@@ -462,7 +587,7 @@ internal sealed class DiscordBotBridge : IDisposable
     {
         var payload = new
         {
-            content = "## PartyPing is online\nUse these controls to start or pause Party Finder searching from Discord.",
+            content = "## PartyPing is online\nStart/pause PF searching or change the include/exclude search terms from Discord.",
             components = new object[]
             {
                 new
@@ -484,6 +609,14 @@ internal sealed class DiscordBotBridge : IDisposable
                             style = 4,
                             label = "Search OFF",
                             custom_id = SearchOffButtonId,
+                            disabled = false,
+                        },
+                        new
+                        {
+                            type = 2,
+                            style = 1,
+                            label = "Search Terms",
+                            custom_id = SearchTermsButtonId,
                             disabled = false,
                         },
                     },

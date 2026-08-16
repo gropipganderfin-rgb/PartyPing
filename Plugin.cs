@@ -49,7 +49,9 @@ public sealed partial class Plugin : IDalamudPlugin
         discordBotBridge = new DiscordBotBridge(
             OpenLocalPfListingFromDiscordAsync,
             IgnoreLocalPfListingFromDiscordAsync,
-            SetSearchEnabledFromDiscordAsync);
+            SetSearchEnabledFromDiscordAsync,
+            () => (Configuration.IncludeKeywords, Configuration.ExcludeKeywords),
+            SetSearchTermsFromDiscordAsync);
         discordBotBridge.EnsureRunning(Configuration);
 
         configWindow = new ConfigWindow(this);
@@ -103,6 +105,30 @@ public sealed partial class Plugin : IDalamudPlugin
         else
         {
             LocalPfStatus = "Local PF: searching paused from Discord";
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task SetSearchTermsFromDiscordAsync(
+        string includeKeywords,
+        string excludeKeywords,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Configuration.IncludeKeywords = includeKeywords.Trim();
+        Configuration.ExcludeKeywords = excludeKeywords.Trim();
+        Configuration.Save();
+
+        if (Configuration.Enabled)
+        {
+            LocalPfStatus = "Local PF: search terms updated from Discord - starting a scan now";
+            _ = CheckLocalPfNowAsync();
+        }
+        else
+        {
+            LocalPfStatus = "Local PF: search terms updated from Discord - searching remains paused";
         }
 
         return Task.CompletedTask;
