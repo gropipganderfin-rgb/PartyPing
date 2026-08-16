@@ -1,0 +1,54 @@
+name: Verify Party Role Diagnostics
+
+on:
+  push:
+    branches:
+      - fix-party-detection-role-diagnostics
+    paths:
+      - .github/workflows/verify-party-role-diagnostics.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-commit:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: fix-party-detection-role-diagnostics
+          fetch-depth: 0
+
+      - name: Apply fixes
+        run: python .\tools\apply_party_role_diagnostics_fix.py
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          architecture: x64
+
+      - name: Install Dalamud build files
+        shell: pwsh
+        run: |
+          $dalamudPath = Join-Path $env:APPDATA "XIVLauncher\addon\Hooks\dev"
+          $dalamudZip = Join-Path $env:RUNNER_TEMP "dalamud.zip"
+          New-Item -ItemType Directory -Force -Path $dalamudPath | Out-Null
+          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile $dalamudZip
+          Expand-Archive -Path $dalamudZip -DestinationPath $dalamudPath -Force
+
+      - name: Restore
+        run: dotnet restore .\PartyPing.csproj
+
+      - name: Build
+        run: dotnet build .\PartyPing.csproj -c Release -p:Platform=x64 --no-restore
+
+      - name: Commit verified fixes
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add LocalPfScanner.cs PartyTracker.cs version.txt
+          git commit -m "Fix party detection and PF role filtering"
+          git push origin HEAD:fix-party-detection-role-diagnostics
