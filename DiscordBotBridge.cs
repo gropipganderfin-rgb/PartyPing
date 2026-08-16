@@ -432,36 +432,30 @@ internal sealed class DiscordBotBridge : IDisposable
                 {
                     new
                     {
-                        type = 1,
-                        components = new object[]
+                        type = 18,
+                        label = "Include terms (comma-separated)",
+                        component = new
                         {
-                            new
-                            {
-                                type = 4,
-                                custom_id = IncludeTermsInputId,
-                                label = "Include terms (comma-separated)",
-                                style = 1,
-                                required = false,
-                                max_length = 512,
-                                value = includeKeywords ?? string.Empty,
-                            },
+                            type = 4,
+                            custom_id = IncludeTermsInputId,
+                            style = 1,
+                            required = false,
+                            max_length = 512,
+                            value = includeKeywords ?? string.Empty,
                         },
                     },
                     new
                     {
-                        type = 1,
-                        components = new object[]
+                        type = 18,
+                        label = "Exclude terms (comma-separated)",
+                        component = new
                         {
-                            new
-                            {
-                                type = 4,
-                                custom_id = ExcludeTermsInputId,
-                                label = "Exclude terms (comma-separated)",
-                                style = 1,
-                                required = false,
-                                max_length = 512,
-                                value = excludeKeywords ?? string.Empty,
-                            },
+                            type = 4,
+                            custom_id = ExcludeTermsInputId,
+                            style = 1,
+                            required = false,
+                            max_length = 512,
+                            value = excludeKeywords ?? string.Empty,
                         },
                     },
                 },
@@ -475,6 +469,18 @@ internal sealed class DiscordBotBridge : IDisposable
 
         foreach (var row in rows.EnumerateArray())
         {
+            // Current Discord modal format: a Label component wraps one Text Input.
+            if (row.TryGetProperty("component", out var child) &&
+                child.ValueKind == JsonValueKind.Object &&
+                child.TryGetProperty("custom_id", out var childId) &&
+                string.Equals(childId.GetString(), wantedCustomId, StringComparison.Ordinal))
+            {
+                return child.TryGetProperty("value", out var childValue)
+                    ? childValue.GetString() ?? string.Empty
+                    : string.Empty;
+            }
+
+            // Legacy Action Row format, retained as a compatibility fallback.
             if (!row.TryGetProperty("components", out var components) || components.ValueKind != JsonValueKind.Array)
                 continue;
 
