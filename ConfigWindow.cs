@@ -85,11 +85,12 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.TextWrapped("PartyPing automatically polls FFXIV's High-End Duty Party Finder at a new random whole-second interval from 30 through 60 seconds after each cycle. The Party Finder window does not need to be open.");
         ImGui.TextWrapped("Matching posts stay visible and continue updating while you are in a party. Posts are removed when they stop qualifying, except the PF belonging to your current party is retained until you leave.");
-        ImGui.TextDisabled(plugin.LocalPfStatus);
+        ImGui.TextWrapped("After each scan, the status below shows why received listings were rejected: duty, world, iLvl 999, open slots, role, excluded keyword, or missing include keyword.");
+        ImGui.TextWrapped(plugin.LocalPfStatus);
 
         DrawSectionHeader("Current party highlight");
         ImGui.TextWrapped("When you join a normal party, PartyPing keeps all matching PF cards visible and highlights the card belonging to your party. The highlighted card uses your live in-game party count, so it updates when someone joins or leaves. If your join fills the role you were filtering for or the listing disappears from public PF, your highlighted card is kept until you leave the party.");
-        ImGui.TextDisabled(plugin.PartyFillStatus);
+        ImGui.TextWrapped(plugin.PartyFillStatus);
 
         DrawSectionHeader("Discord bot - interactive PF buttons");
         ImGui.TextWrapped("Configure a Discord application bot here to get native Open in FFXIV and Join Party buttons on PF cards. PartyPing connects directly to Discord's Gateway; clicking the buttons does not open a browser.");
