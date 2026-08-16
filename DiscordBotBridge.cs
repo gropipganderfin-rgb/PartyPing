@@ -10,9 +10,11 @@ internal sealed class DiscordBotBridge : IDisposable
     private const string DiscordApiBase = "https://discord.com/api/v10";
     private const string OpenButtonPrefix = "partyping_open:";
     private const string JoinButtonPrefix = "partyping_join:";
+    private const string IgnoreButtonPrefix = "partyping_ignore:";
     private const int GuildsIntent = 1;
 
     private readonly Func<ulong, CancellationToken, Task<bool>> openListing;
+    private readonly Func<ulong, CancellationToken, Task<bool>> ignoreListing;
     private readonly HttpClient http = new();
     private readonly object stateLock = new();
 
@@ -21,9 +23,12 @@ internal sealed class DiscordBotBridge : IDisposable
     private string configurationKey = string.Empty;
     private bool disposed;
 
-    internal DiscordBotBridge(Func<ulong, CancellationToken, Task<bool>> openListing)
+    internal DiscordBotBridge(
+        Func<ulong, CancellationToken, Task<bool>> openListing,
+        Func<ulong, CancellationToken, Task<bool>> ignoreListing)
     {
         this.openListing = openListing;
+        this.ignoreListing = ignoreListing;
     }
 
     internal string Status { get; private set; } =
@@ -194,7 +199,7 @@ internal sealed class DiscordBotBridge : IDisposable
 
                 if (string.Equals(eventName, "READY", StringComparison.Ordinal))
                 {
-                    Status = "Discord bot: connected - Open / Join Party buttons ready";
+                    Status = "Discord bot: connected - Open / Join / Ignore buttons ready";
                     continue;
                 }
 
@@ -247,12 +252,15 @@ internal sealed class DiscordBotBridge : IDisposable
 
             var isJoin = customId.StartsWith(JoinButtonPrefix, StringComparison.Ordinal);
             var isOpen = customId.StartsWith(OpenButtonPrefix, StringComparison.Ordinal);
-            if (!isJoin && !isOpen)
+            var isIgnore = customId.StartsWith(IgnoreButtonPrefix, StringComparison.Ordinal);
+            if (!isJoin && !isOpen && !isIgnore)
                 return;
 
             Status = isJoin
                 ? "Discord bot: Join Party button received..."
-                : "Discord bot: Open in FFXIV button received...";
+                : isIgnore
+                    ? "Discord bot: Ignore button received..."
+                    : "Discord bot: Open in FFXIV button received...";
 
             if (!interaction.TryGetProperty("id", out var interactionIdElement) ||
                 !interaction.TryGetProperty("token", out var interactionTokenElement))
@@ -286,7 +294,7 @@ internal sealed class DiscordBotBridge : IDisposable
                 return;
             }
 
-            var prefix = isJoin ? JoinButtonPrefix : OpenButtonPrefix;
+            var prefix = isJoin ? JoinButtonPrefix : isIgnore ? IgnoreButtonPrefix : OpenButtonPrefix;
             if (!ulong.TryParse(customId[prefix.Length..], out var listingId) || listingId == 0)
             {
                 await RespondEphemeralAsync(
@@ -304,7 +312,12 @@ internal sealed class DiscordBotBridge : IDisposable
                 new { type = 6 },
                 cancellationToken).ConfigureAwait(false);
 
-            if (isJoin)
+            if (isIgnore)
+            {
+                Status = "Discord bot: button acknowledged - ignoring PF listing " + listingId;
+                _ = IgnoreListingAfterAcknowledgementAsync(listingId, cancellationToken);
+            }
+            else if (isJoin)
             {
                 Status = "Discord bot: button acknowledged - joining PF listing " + listingId;
                 _ = JoinListingAfterAcknowledgementAsync(listingId, cancellationToken);
@@ -322,6 +335,25 @@ internal sealed class DiscordBotBridge : IDisposable
         {
             Status = "Discord bot: button failed - " + ex.Message;
             Plugin.Log.Warning(ex, "PartyPing could not process a Discord PF button interaction");
+        }
+    }
+
+    private async Task IgnoreListingAfterAcknowledgementAsync(ulong listingId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var ignored = await ignoreListing(listingId, cancellationToken).ConfigureAwait(false);
+            Status = ignored
+                ? "Discord bot: connected - ignored PF listing " + listingId
+                : "Discord bot: connected - could not ignore PF listing " + listingId;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Status = "Discord bot: ignore failed - " + ex.Message;
+            Plugin.Log.Warning(ex, "PartyPing could not ignore PF listing {ListingId} after Discord acknowledgement", listingId);
         }
     }
 

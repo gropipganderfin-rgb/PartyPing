@@ -225,8 +225,8 @@ public sealed partial class Plugin
 
         // FFXIV only sends one PF page at a time. A saturated page therefore needs
         // the actual LookingForGroup pager. If the user did not already have PF open,
-        // create the addon, hide it without closing it, and invoke its registered page
-        // event directly. No hard-coded callback/event number is used.
+        // create the addon and make it transparent while leaving it active. Hiding the
+        // addon deactivates native paging. No hard-coded callback/event number is used.
         var pagerReady = await EnsureLocalPfPagingUiAsync(originalUiState.WasOpen, cancellationToken).ConfigureAwait(false);
         var openedPagingUi = pagerReady && !originalUiState.WasOpen;
         if (!pagerReady)
@@ -336,9 +336,9 @@ public sealed partial class Plugin
                         if (addon == null || !addon->AddonLookingForGroupBase.AtkUnitBase.IsReady)
                             return false;
 
-                        // Keep the addon alive so its registered page-button event is valid,
-                        // but hide a PF window that PartyPing opened solely for pagination.
-                        addon->AddonLookingForGroupBase.AtkUnitBase.Hide(true, false, 0);
+                        // Keep the addon shown/active so its registered page-button event
+                        // remains functional, but make the background pager invisible.
+                        addon->AddonLookingForGroupBase.AtkUnitBase.SetAlpha(0);
                         return true;
                     }
                 }, cancellationToken).ConfigureAwait(false);
@@ -564,6 +564,7 @@ public sealed partial class Plugin
     {
         var config = Configuration;
         var seenFingerprints = listings.Select(x => x.Fingerprint).ToHashSet(StringComparer.Ordinal);
+        var ignoredListingIds = config.IgnoredPfListingIds.ToHashSet();
         var matchingCount = 0;
         var newCount = 0;
         var updatedCount = 0;
@@ -590,6 +591,17 @@ public sealed partial class Plugin
 
         foreach (var listing in listings)
         {
+            if (ignoredListingIds.Contains(listing.ListingId))
+            {
+                CountRejection("ignored");
+                if (activePfAlerts.TryGetValue(listing.Fingerprint, out var ignoredAlert))
+                {
+                    if (await DeleteLocalPfAlertAsync(listing.Fingerprint, ignoredAlert, config, cancellationToken).ConfigureAwait(false))
+                        removedCount++;
+                }
+                continue;
+            }
+
             if (!listing.Duty.Contains(config.DutyNameContains.Trim(), StringComparison.OrdinalIgnoreCase))
             {
                 CountRejection("duty");
@@ -616,6 +628,7 @@ public sealed partial class Plugin
                 matchingCount++;
                 activeAlert.MissedPolls = 0;
                 activeAlert.ExpiresAtUnixSeconds = listing.ExpiresAtUnixSeconds;
+                activeAlert.ListingId = listing.ListingId;
                 stateChanged = true;
 
                 var message = BuildLocalPfMessage(listing, config.RequiredRole);
@@ -684,6 +697,7 @@ public sealed partial class Plugin
                 LastContent = newMessage,
                 MissedPolls = 0,
                 ExpiresAtUnixSeconds = listing.ExpiresAtUnixSeconds,
+                ListingId = listing.ListingId,
                 Transport = result.Transport,
             };
             stateChanged = true;
@@ -732,6 +746,13 @@ public sealed partial class Plugin
                 if (await DeleteLocalPfAlertAsync(pair.Key, pair.Value, config, cancellationToken).ConfigureAwait(false))
                     removedCount++;
             }
+        }
+
+        if (completeScan && config.IgnoredPfListingIds.Count > 0)
+        {
+            var liveListingIds = listings.Select(x => x.ListingId).ToHashSet();
+            if (config.IgnoredPfListingIds.RemoveAll(id => !liveListingIds.Contains(id)) > 0)
+                stateChanged = true;
         }
 
         if (stateChanged)
@@ -812,6 +833,43 @@ public sealed partial class Plugin
                 "need phys ranged", "need physical ranged", "need prange"),
             _ => false,
         };
+    }
+
+    internal int IgnoredPfListingCount => Configuration.IgnoredPfListingIds.Count;
+
+    internal void ClearIgnoredPfListings()
+    {
+        if (Configuration.IgnoredPfListingIds.Count == 0)
+            return;
+
+        Configuration.IgnoredPfListingIds.Clear();
+        Configuration.Save();
+        LocalPfStatus = "Local PF: ignored listing list cleared";
+    }
+
+    private async Task<bool> IgnoreLocalPfListingFromDiscordAsync(
+        ulong listingId,
+        CancellationToken cancellationToken)
+    {
+        if (listingId == 0)
+            return false;
+
+        if (!Configuration.IgnoredPfListingIds.Contains(listingId))
+            Configuration.IgnoredPfListingIds.Add(listingId);
+
+        foreach (var pair in activePfAlerts.ToArray())
+        {
+            var matchesListing = pair.Value.ListingId == listingId ||
+                pair.Value.LastContent.Contains($"**Listing ID:** {listingId}", StringComparison.Ordinal);
+            if (!matchesListing)
+                continue;
+
+            await DeleteLocalPfAlertAsync(pair.Key, pair.Value, Configuration, cancellationToken).ConfigureAwait(false);
+        }
+
+        Configuration.Save();
+        LocalPfStatus = $"Local PF: ignored listing {listingId} until it expires or is reposted";
+        return true;
     }
 
     private async Task<bool> DeleteLocalPfAlertAsync(

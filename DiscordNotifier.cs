@@ -17,6 +17,7 @@ internal sealed class DiscordNotifier : IDisposable
     private const int PartyFinderEmbedColor = 0x5865F2;
     private const string OpenButtonPrefix = "partyping_open:";
     private const string JoinButtonPrefix = "partyping_join:";
+    private const string IgnoreButtonPrefix = "partyping_ignore:";
 
     private readonly HttpClient http = new();
 
@@ -310,6 +311,14 @@ internal sealed class DiscordNotifier : IDisposable
                                 label = pf.IsCurrentParty ? "Joined" : "Join Party",
                                 custom_id = JoinButtonPrefix + pf.ListingId,
                                 disabled = pf.IsCurrentParty,
+                            },
+                            new
+                            {
+                                type = 2,
+                                style = 2,
+                                label = "Ignore",
+                                custom_id = IgnoreButtonPrefix + pf.ListingId,
+                                disabled = false,
                             },
                         },
                     },

@@ -5,7 +5,7 @@ namespace PartyPing;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 9;
+    public int Version { get; set; } = 10;
 
     public bool Enabled { get; set; } = false;
     public ushort DutyId { get; set; } = 0;
@@ -40,6 +40,10 @@ public sealed class Configuration : IPluginConfiguration
     // continue to work after a plugin reload, game restart, or PartyPing update.
     public Dictionary<string, PersistedPfAlert> ActivePfAlerts { get; set; } = [];
 
+    // Individual PF cards dismissed with the Discord Ignore button. IDs are removed
+    // automatically after a complete scan proves the listing no longer exists.
+    public List<ulong> IgnoredPfListingIds { get; set; } = [];
+
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }
 
@@ -51,6 +55,7 @@ public sealed class PersistedPfAlert
     public string LastContent { get; set; } = string.Empty;
     public int MissedPolls { get; set; }
     public long ExpiresAtUnixSeconds { get; set; }
+    public ulong ListingId { get; set; }
 
     // Empty means the alert predates transport tracking. Those messages are
     // migrated to the bot transport automatically on the next matching PF poll.

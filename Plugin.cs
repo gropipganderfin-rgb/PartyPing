@@ -44,8 +44,11 @@ public sealed partial class Plugin : IDalamudPlugin
         Configuration.DiscordBotToken ??= string.Empty;
         Configuration.DiscordChannelId ??= string.Empty;
         Configuration.DiscordUserId ??= string.Empty;
+        Configuration.IgnoredPfListingIds ??= [];
 
-        discordBotBridge = new DiscordBotBridge(OpenLocalPfListingFromDiscordAsync);
+        discordBotBridge = new DiscordBotBridge(
+            OpenLocalPfListingFromDiscordAsync,
+            IgnoreLocalPfListingFromDiscordAsync);
         discordBotBridge.EnsureRunning(Configuration);
 
         configWindow = new ConfigWindow(this);
