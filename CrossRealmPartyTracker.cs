@@ -22,15 +22,23 @@ public sealed partial class Plugin
             return false;
 
         var availableGroups = proxy->CrossRealmGroups.Length;
-        var groupCount = Math.Clamp((int)proxy->GroupCount, 0, availableGroups);
-        if (groupCount <= 0)
+        if (availableGroups <= 0)
             return false;
 
-        var groupIndex = Math.Clamp((int)proxy->LocalPlayerGroupIndex, 0, groupCount - 1);
+        // GroupCount can briefly be zero during cross-world PF transitions even while
+        // IsInCrossRealmParty is already true. LocalPlayerGroupIndex + the group's own
+        // GroupMemberCount are the useful authoritative fields for a normal CW party.
+        var groupIndex = (int)proxy->LocalPlayerGroupIndex;
+        if (groupIndex < 0 || groupIndex >= availableGroups)
+            groupIndex = 0;
+
         var group = proxy->CrossRealmGroups[groupIndex];
+        var reportedMemberCount = Math.Clamp((int)group.GroupMemberCount, 0, Math.Min(8, group.GroupMembers.Length));
 
         var identities = new List<(string Name, ulong ContentId, bool IsLeader)>();
-        var scanCount = Math.Min(8, group.GroupMembers.Length);
+        var scanCount = reportedMemberCount > 0
+            ? reportedMemberCount
+            : Math.Min(8, group.GroupMembers.Length);
         for (var i = 0; i < scanCount; i++)
         {
             var member = group.GroupMembers[i];
@@ -44,7 +52,7 @@ public sealed partial class Plugin
             identities.Add((name, member.ContentId, member.IsPartyLeader));
         }
 
-        var memberCount = identities.Count;
+        var memberCount = reportedMemberCount > 0 ? reportedMemberCount : identities.Count;
         if (memberCount <= 1)
             return false;
 

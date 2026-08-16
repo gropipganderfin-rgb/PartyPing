@@ -214,12 +214,30 @@ public sealed partial class Plugin
             var recruiter = $"{recruiterName} @ {homeWorld}";
             var description = listing.Description.TextValue;
             var fingerprint = $"{duty}\u001f{recruiter}\u001f{currentWorld}";
-            // Only inspect seats that are currently open. Filled seats and padding must not count toward role availability.
+            // SlotFlags and RawJobsPresent are both 8-entry PF arrays. A zero job entry
+            // marks an unfilled seat at that same slot index. Do not assume filled seats
+            // are packed at the front: an open tank/healer seat can be anywhere in the row.
             var openSlotCount = Math.Max(0, listing.SlotsAvailable - listing.SlotsFilled);
-            var acceptedJobs = listing.Slots
-                .Skip(listing.SlotsFilled)
-                .Take(openSlotCount)
-                .SelectMany(slot => slot.Accepting)
+            var slots = listing.Slots.ToArray();
+            var jobsPresent = listing.RawJobsPresent.ToArray();
+            var usableSlotCount = Math.Min((int)listing.SlotsAvailable, Math.Min(slots.Length, jobsPresent.Length));
+
+            var openSlotIndexes = Enumerable.Range(0, usableSlotCount)
+                .Where(index => jobsPresent[index] == 0)
+                .ToArray();
+
+            // Defensive fallback for malformed/transitional packets. If the positional
+            // zero count does not agree with SlotsAvailable-SlotsFilled, retain the old
+            // packed-seat interpretation instead of dropping the listing entirely.
+            if (openSlotIndexes.Length != openSlotCount)
+            {
+                var start = Math.Min((int)listing.SlotsFilled, usableSlotCount);
+                var count = Math.Min(openSlotCount, Math.Max(0, usableSlotCount - start));
+                openSlotIndexes = Enumerable.Range(start, count).ToArray();
+            }
+
+            var acceptedJobs = openSlotIndexes
+                .SelectMany(index => slots[index].Accepting)
                 .Distinct()
                 .ToArray();
             var expiresAt = DateTimeOffset.UtcNow
