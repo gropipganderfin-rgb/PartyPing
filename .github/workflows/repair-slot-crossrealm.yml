@@ -1,0 +1,35 @@
+name: Repair PartyPing PF slot and cross-realm tracking
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/repair-slot-crossrealm.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply repair
+        run: python tools/repair_slot_crossrealm.py
+
+      - name: Remove temporary repair files
+        run: |
+          rm tools/repair_slot_crossrealm.py
+          rm .github/workflows/repair-slot-crossrealm.yml
+
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix PF open-slot and cross-world party detection"
+          git push origin HEAD:main
