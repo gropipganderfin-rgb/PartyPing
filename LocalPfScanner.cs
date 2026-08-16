@@ -214,30 +214,15 @@ public sealed partial class Plugin
             var recruiter = $"{recruiterName} @ {homeWorld}";
             var description = listing.Description.TextValue;
             var fingerprint = $"{duty}\u001f{recruiter}\u001f{currentWorld}";
-            // SlotFlags and RawJobsPresent are both 8-entry PF arrays. A zero job entry
-            // marks an unfilled seat at that same slot index. Do not assume filled seats
-            // are packed at the front: an open tank/healer seat can be anywhere in the row.
+            // Dalamud exposes JobsPresent as the jobs already in the party, not a
+            // guaranteed seat-by-seat occupancy map. Party Finder slot restrictions are
+            // ordered with the filled seats first, followed by the currently open seats.
+            // Inspect exactly SlotsAvailable-SlotsFilled open seats and ignore padding.
             var openSlotCount = Math.Max(0, listing.SlotsAvailable - listing.SlotsFilled);
-            var slots = listing.Slots.ToArray();
-            var jobsPresent = listing.RawJobsPresent.ToArray();
-            var usableSlotCount = Math.Min((int)listing.SlotsAvailable, Math.Min(slots.Length, jobsPresent.Length));
-
-            var openSlotIndexes = Enumerable.Range(0, usableSlotCount)
-                .Where(index => jobsPresent[index] == 0)
-                .ToArray();
-
-            // Defensive fallback for malformed/transitional packets. If the positional
-            // zero count does not agree with SlotsAvailable-SlotsFilled, retain the old
-            // packed-seat interpretation instead of dropping the listing entirely.
-            if (openSlotIndexes.Length != openSlotCount)
-            {
-                var start = Math.Min((int)listing.SlotsFilled, usableSlotCount);
-                var count = Math.Min(openSlotCount, Math.Max(0, usableSlotCount - start));
-                openSlotIndexes = Enumerable.Range(start, count).ToArray();
-            }
-
-            var acceptedJobs = openSlotIndexes
-                .SelectMany(index => slots[index].Accepting)
+            var acceptedJobs = listing.Slots
+                .Skip(listing.SlotsFilled)
+                .Take(openSlotCount)
+                .SelectMany(slot => slot.Accepting)
                 .Distinct()
                 .ToArray();
             var expiresAt = DateTimeOffset.UtcNow
@@ -285,9 +270,6 @@ public sealed partial class Plugin
                 lastReceiveUtc = localPfLastReceiveUtc;
             }
 
-            if (count >= LocalPfMaxListingsPerPage)
-                return;
-
             var elapsed = DateTime.UtcNow - startedUtc;
             if (count > 0 &&
                 elapsed >= LocalPfMinimumReceiveWindow &&
@@ -308,7 +290,14 @@ public sealed partial class Plugin
         var newCount = 0;
         var updatedCount = 0;
         var removedCount = 0;
+        var rejectionCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var stateChanged = false;
+
+        void CountRejection(string reason)
+        {
+            rejectionCounts.TryGetValue(reason, out var count);
+            rejectionCounts[reason] = count + 1;
+        }
 
         // If the configured duty changes, old-duty posts are no longer valid and
         // should disappear immediately instead of waiting to show up in a scan.
@@ -324,9 +313,16 @@ public sealed partial class Plugin
         foreach (var listing in listings)
         {
             if (!listing.Duty.Contains(config.DutyNameContains.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                CountRejection("duty");
                 continue;
+            }
 
-            var matches = MatchesLocalPfListing(listing, config);
+            var rejectionReason = GetLocalPfRejectionReason(listing, config);
+            var matches = rejectionReason is null;
+            if (rejectionReason is not null)
+                CountRejection(rejectionReason);
+
             var isCurrentParty = TryGetCurrentPartySize(listing.Fingerprint, out _);
             var shouldKeep = matches || isCurrentParty;
 
@@ -469,25 +465,74 @@ public sealed partial class Plugin
                 ? "complete page; missing posts removed immediately"
                 : $"50-listing page; unseen posts removed after {SaturatedPageMissesBeforeRemoval} consecutive misses";
 
+        var rejectionSummary = rejectionCounts.Count == 0
+            ? "none"
+            : string.Join(", ", rejectionCounts
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => $"{pair.Key} {pair.Value}"));
+
         LocalPfStatus =
             $"Local PF: checked {DateTime.Now:t} - {listings.Count} High-End listings, " +
-            $"{matchingCount} matched, {newCount} new, {updatedCount} updated, {removedCount} removed ({completeness})";
+            $"{matchingCount} matched, {newCount} new, {updatedCount} updated, {removedCount} removed; " +
+            $"rejected: {rejectionSummary} ({completeness})";
     }
 
-    private static bool MatchesLocalPfListing(LocalPfListingSnapshot listing, Configuration config)
+    private static bool MatchesLocalPfListing(LocalPfListingSnapshot listing, Configuration config) =>
+        GetLocalPfRejectionReason(listing, config) is null;
+
+    private static string? GetLocalPfRejectionReason(LocalPfListingSnapshot listing, Configuration config)
     {
         if (listing.MinimumItemLevel == 999)
-            return false;
+            return "iLvl 999";
 
         var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
         if (openSlots < Math.Max(0, config.MinimumOpenSlots))
+            return "open slots";
+
+        if (config.RequiredRole != RoleFilter.AnyRole)
+        {
+            var roleOpenFromSlots = listing.AcceptedJobs.Any(job => config.RequiredRole.Matches(job));
+            var roleOpenFromDescription = DescriptionExplicitlyRequestsRole(listing.Description, config.RequiredRole);
+            if (!roleOpenFromSlots && !roleOpenFromDescription)
+                return "role";
+        }
+
+        if (!MatchesTextRules(listing.Duty, listing.Description, config))
+            return "keywords";
+
+        return null;
+    }
+
+    private static bool DescriptionExplicitlyRequestsRole(string description, RoleFilter role)
+    {
+        if (string.IsNullOrWhiteSpace(description) || role == RoleFilter.AnyRole)
             return false;
 
-        if (config.RequiredRole != RoleFilter.AnyRole &&
-            !listing.AcceptedJobs.Any(job => config.RequiredRole.Matches(job)))
-            return false;
+        var text = NormalizeMatchText(description).ToLowerInvariant();
 
-        return MatchesTextRules(listing.Duty, listing.Description, config);
+        static bool HasAny(string value, params string[] phrases) =>
+            phrases.Any(phrase => value.Contains(phrase, StringComparison.Ordinal));
+
+        return role switch
+        {
+            RoleFilter.Tank => HasAny(text,
+                "need mt", "need ot", "need tank", "need a tank", "lf mt", "lf ot", "lf tank",
+                "mt needed", "ot needed", "tank needed", "tank open"),
+            RoleFilter.Healer => HasAny(text,
+                "need h1", "need h2", "need healer", "need a healer", "lf h1", "lf h2", "lf healer",
+                "healer needed", "healer open"),
+            RoleFilter.Melee => HasAny(text,
+                "need melee", "lf melee", "melee needed", "melee open"),
+            RoleFilter.PhysicalRanged => HasAny(text,
+                "need phys ranged", "need physical ranged", "need prange", "lf phys ranged", "lf prange",
+                "physical ranged needed", "prange needed"),
+            RoleFilter.Caster => HasAny(text,
+                "need caster", "need magic ranged", "need magical ranged", "lf caster", "caster needed", "caster open"),
+            RoleFilter.AnyDps => HasAny(text,
+                "need dps", "need a dps", "lf dps", "dps needed", "dps open", "need melee", "need caster",
+                "need phys ranged", "need physical ranged", "need prange"),
+            _ => false,
+        };
     }
 
     private async Task<bool> DeleteLocalPfAlertAsync(
