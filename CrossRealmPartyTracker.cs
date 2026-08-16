@@ -14,35 +14,39 @@ public sealed partial class Plugin
 
     private unsafe bool TryTrackCrossRealmParty()
     {
+        // Avoid calling InfoProxyCrossRealm member functions from the tracker.
+        // Reading the already-populated proxy fields removes a native-call crash
+        // surface from a loop that runs for the whole session.
         var proxy = InfoProxyCrossRealm.Instance();
-        if (proxy is null ||
-            !InfoProxyCrossRealm.IsCrossRealmParty() ||
-            InfoProxyCrossRealm.IsAllianceRaid())
-        {
+        if (proxy is null || !proxy->IsInCrossRealmParty || proxy->IsInAllianceRaid)
             return false;
-        }
 
-        var groupIndex = (int)proxy->LocalPlayerGroupIndex;
-        var memberCount = Math.Clamp((int)InfoProxyCrossRealm.GetGroupMemberCount(groupIndex), 0, 8);
-        if (memberCount <= 1)
-            memberCount = Math.Clamp((int)InfoProxyCrossRealm.GetPartyMemberCount(), 0, 8);
-
-        if (memberCount <= 1)
+        var availableGroups = proxy->CrossRealmGroups.Length;
+        var groupCount = Math.Clamp((int)proxy->GroupCount, 0, availableGroups);
+        if (groupCount <= 0)
             return false;
+
+        var groupIndex = Math.Clamp((int)proxy->LocalPlayerGroupIndex, 0, groupCount - 1);
+        var group = proxy->CrossRealmGroups[groupIndex];
 
         var identities = new List<(string Name, ulong ContentId, bool IsLeader)>();
-        for (var i = 0; i < memberCount; i++)
+        var scanCount = Math.Min(8, group.GroupMembers.Length);
+        for (var i = 0; i < scanCount; i++)
         {
-            var member = InfoProxyCrossRealm.GetGroupMember((uint)i, groupIndex);
-            if (member is null)
+            var member = group.GroupMembers[i];
+            if (member.ContentId == 0)
                 continue;
 
-            var name = member->NameString.Trim();
+            var name = member.NameString.Trim();
             if (string.IsNullOrWhiteSpace(name))
                 continue;
 
-            identities.Add((name, member->ContentId, member->IsPartyLeader));
+            identities.Add((name, member.ContentId, member.IsPartyLeader));
         }
+
+        var memberCount = identities.Count;
+        if (memberCount <= 1)
+            return false;
 
         var leader = identities.FirstOrDefault(x => x.IsLeader);
         var recruiter = ResolveTrackedRecruiter(leader.Name);

@@ -12,9 +12,9 @@ public sealed partial class Plugin
     private const byte LocalPfHighEndDutyCategory = 6;
     private const int LocalPfMaxListingsPerPage = 50;
     private const int SaturatedPageMissesBeforeRemoval = 3;
-    private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(1500);
-    private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(900);
+    private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(2000);
+    private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(1200);
 
     private static readonly HashSet<string> LocalPfNorthAmericanWorlds = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -92,7 +92,12 @@ public sealed partial class Plugin
         {
             LocalPfStatus = "Local PF: requesting High-End Duty listings from FFXIV...";
 
-            if (!RequestLocalPfHighEndListings())
+            // Native FFXIV agent calls must run on the framework/game thread.
+            var requestAccepted = await Framework.Run(
+                RequestLocalPfHighEndListings,
+                cancellation.Token).ConfigureAwait(false);
+
+            if (!requestAccepted)
             {
                 LocalPfStatus = "Local PF: FFXIV rejected the Party Finder refresh request";
                 return;
@@ -137,7 +142,15 @@ public sealed partial class Plugin
     private static unsafe bool RequestLocalPfHighEndListings()
     {
         var agent = AgentLookingForGroup.Instance();
-        return agent != null && agent->RequestCategoryListings(LocalPfHighEndDutyCategory);
+        if (agent is null)
+            return false;
+
+        // Force a data-center, normal-party query so a World/Private PF tab
+        // cannot silently hide valid prog listings from PartyPing.
+        agent->SearchAreaTab = 0;
+        agent->GroupTypeTab = 0;
+
+        return agent->RequestCategoryListings(LocalPfHighEndDutyCategory);
     }
 
     private async Task<bool> OpenLocalPfListingFromDiscordAsync(ulong listingId, CancellationToken cancellationToken)

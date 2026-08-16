@@ -44,7 +44,7 @@ public sealed partial class Plugin
                     TrackJoinedPartyCardRobust();
                 }, cancellationToken).ConfigureAwait(false);
 
-                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromMilliseconds(1000), cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
