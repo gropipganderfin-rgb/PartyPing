@@ -12,9 +12,7 @@ public sealed partial class Plugin
     private const byte LocalPfHighEndDutyCategory = 6;
     private const int LocalPfMaxListingsPerPage = 50;
     private const int SaturatedPageMissesBeforeRemoval = 3;
-    private static readonly TimeSpan LocalPfMaximumReceiveWindow = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan LocalPfMinimumReceiveWindow = TimeSpan.FromMilliseconds(1500);
-    private static readonly TimeSpan LocalPfQuietPeriod = TimeSpan.FromMilliseconds(900);
+    private static readonly TimeSpan LocalPfReceiveWindow = TimeSpan.FromMilliseconds(2500);
 
     private static readonly HashSet<string> LocalPfNorthAmericanWorlds = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -38,7 +36,6 @@ public sealed partial class Plugin
 
     private readonly object localPfSync = new();
     private readonly Dictionary<ulong, LocalPfListingSnapshot> localPfReceived = new();
-    private DateTime localPfLastReceiveUtc = DateTime.MinValue;
 
     private sealed record LocalPfListingSnapshot(
         ulong ListingId,
@@ -81,10 +78,7 @@ public sealed partial class Plugin
 
         LocalPfCheckInProgress = true;
         lock (localPfSync)
-        {
             localPfReceived.Clear();
-            localPfLastReceiveUtc = DateTime.MinValue;
-        }
 
         PartyFinderGui.ReceiveListing += OnLocalPfListingReceived;
 
@@ -98,7 +92,7 @@ public sealed partial class Plugin
                 return;
             }
 
-            await WaitForLocalPfResponseAsync(cancellation.Token).ConfigureAwait(false);
+            await Task.Delay(LocalPfReceiveWindow, cancellation.Token).ConfigureAwait(false);
 
             LocalPfListingSnapshot[] listings;
             lock (localPfSync)
@@ -198,15 +192,12 @@ public sealed partial class Plugin
             var recruiter = $"{recruiterName} @ {homeWorld}";
             var description = listing.Description.TextValue;
             var fingerprint = $"{duty}\u001f{recruiter}\u001f{currentWorld}";
-            // SlotFlags and JobsPresent use the same seat indexes. A seat is open
-            // when JobsPresent[index] is 0; filled seats are not guaranteed to be
-            // packed at the front of the array.
-            var slots = listing.Slots.ToArray();
-            var jobsPresent = listing.RawJobsPresent.ToArray();
-            var seatCount = Math.Min((int)listing.SlotsAvailable, slots.Length);
-            var acceptedJobs = Enumerable.Range(0, seatCount)
-                .Where(index => index >= jobsPresent.Length || jobsPresent[index] == 0)
-                .SelectMany(index => slots[index].Accepting)
+            // Only inspect seats that are currently open. Filled seats and padding must not count toward role availability.
+            var openSlotCount = Math.Max(0, listing.SlotsAvailable - listing.SlotsFilled);
+            var acceptedJobs = listing.Slots
+                .Skip(listing.SlotsFilled)
+                .Take(openSlotCount)
+                .SelectMany(slot => slot.Accepting)
                 .Distinct()
                 .ToArray();
             var expiresAt = DateTimeOffset.UtcNow
@@ -227,43 +218,11 @@ public sealed partial class Plugin
                 expiresAt);
 
             lock (localPfSync)
-            {
                 localPfReceived[listing.Id] = snapshot;
-                localPfLastReceiveUtc = DateTime.UtcNow;
-            }
         }
         catch (Exception ex)
         {
             Log.Debug(ex, "PartyPing could not parse a local PF listing");
-        }
-    }
-
-    private async Task WaitForLocalPfResponseAsync(CancellationToken cancellationToken)
-    {
-        var startedUtc = DateTime.UtcNow;
-
-        while (DateTime.UtcNow - startedUtc < LocalPfMaximumReceiveWindow)
-        {
-            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-
-            int count;
-            DateTime lastReceiveUtc;
-            lock (localPfSync)
-            {
-                count = localPfReceived.Count;
-                lastReceiveUtc = localPfLastReceiveUtc;
-            }
-
-            if (count >= LocalPfMaxListingsPerPage)
-                return;
-
-            var elapsed = DateTime.UtcNow - startedUtc;
-            if (count > 0 &&
-                elapsed >= LocalPfMinimumReceiveWindow &&
-                DateTime.UtcNow - lastReceiveUtc >= LocalPfQuietPeriod)
-            {
-                return;
-            }
         }
     }
 
@@ -277,14 +236,7 @@ public sealed partial class Plugin
         var newCount = 0;
         var updatedCount = 0;
         var removedCount = 0;
-        var rejectionCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var stateChanged = false;
-
-        void CountRejection(string reason)
-        {
-            rejectionCounts.TryGetValue(reason, out var count);
-            rejectionCounts[reason] = count + 1;
-        }
 
         // If the configured duty changes, old-duty posts are no longer valid and
         // should disappear immediately instead of waiting to show up in a scan.
@@ -300,21 +252,13 @@ public sealed partial class Plugin
         foreach (var listing in listings)
         {
             if (!listing.Duty.Contains(config.DutyNameContains.Trim(), StringComparison.OrdinalIgnoreCase))
-            {
-                CountRejection("duty");
                 continue;
-            }
 
-            var rejectionReason = GetLocalPfRejectionReason(listing, config);
-            var matches = rejectionReason is null;
-            if (rejectionReason is not null)
-                CountRejection(rejectionReason);
-            var isCurrentParty = TryGetCurrentPartySize(listing.Fingerprint, out var livePartySize);
-            var shouldKeep = matches || isCurrentParty;
+            var matches = MatchesLocalPfListing(listing, config);
 
             if (activePfAlerts.TryGetValue(listing.Fingerprint, out var activeAlert))
             {
-                if (!shouldKeep)
+                if (!matches)
                 {
                     if (await DeleteLocalPfAlertAsync(listing.Fingerprint, activeAlert, config, cancellationToken).ConfigureAwait(false))
                         removedCount++;
@@ -326,11 +270,7 @@ public sealed partial class Plugin
                 activeAlert.ExpiresAtUnixSeconds = listing.ExpiresAtUnixSeconds;
                 stateChanged = true;
 
-                var message = BuildLocalPfMessage(
-                    listing,
-                    config.RequiredRole,
-                    isCurrentParty,
-                    livePartySize);
+                var message = BuildLocalPfMessage(listing, config.RequiredRole);
 
                 // Existing cards created by the old incoming webhook cannot gain a
                 // real interactive button. Once bot mode is configured, replace them
@@ -383,15 +323,11 @@ public sealed partial class Plugin
                 continue;
             }
 
-            if (!shouldKeep)
+            if (!matches)
                 continue;
 
             matchingCount++;
-            var newMessage = BuildLocalPfMessage(
-                listing,
-                config.RequiredRole,
-                isCurrentParty,
-                livePartySize);
+            var newMessage = BuildLocalPfMessage(listing, config.RequiredRole);
             var result = await smsSender.SendTrackedAsync(config, newMessage, cancellationToken).ConfigureAwait(false);
             activePfAlerts[listing.Fingerprint] = new PersistedPfAlert
             {
@@ -420,11 +356,6 @@ public sealed partial class Plugin
             foreach (var pair in activePfAlerts.ToArray())
             {
                 if (seenFingerprints.Contains(pair.Key))
-                    continue;
-
-                // Keep the card for the party we are currently inside even if the
-                // public PF listing closes, fills, or falls outside the 50-result page.
-                if (IsCurrentPartyFingerprint(pair.Key))
                     continue;
 
                 if (!FingerprintMatchesConfiguredDuty(pair.Key, config.DutyNameContains))
@@ -461,51 +392,28 @@ public sealed partial class Plugin
                 ? "complete page; missing posts removed immediately"
                 : $"50-listing page; unseen posts removed after {SaturatedPageMissesBeforeRemoval} consecutive misses";
 
-        var rejectionSummary = rejectionCounts.Count == 0
-            ? "none"
-            : string.Join(", ", rejectionCounts
-                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(pair => $"{pair.Key} {pair.Value}"));
-
         LocalPfStatus =
             $"Local PF: checked {DateTime.Now:t} - {listings.Count} High-End listings, " +
-            $"{matchingCount} matched, {newCount} new, {updatedCount} updated, {removedCount} removed; " +
-            $"rejected: {rejectionSummary} ({completeness})";
+            $"{matchingCount} matched, {newCount} new, {updatedCount} updated, {removedCount} removed ({completeness})";
     }
 
-    private static bool MatchesLocalPfListing(LocalPfListingSnapshot listing, Configuration config) =>
-        GetLocalPfRejectionReason(listing, config) is null;
-
-    private static string? GetLocalPfRejectionReason(LocalPfListingSnapshot listing, Configuration config)
+    private static bool MatchesLocalPfListing(LocalPfListingSnapshot listing, Configuration config)
     {
         if (!LocalPfNorthAmericanWorlds.Contains(listing.World))
-            return "world";
+            return false;
 
         if (listing.MinimumItemLevel == 999)
-            return "iLvl 999";
+            return false;
 
         var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
         if (openSlots < Math.Max(0, config.MinimumOpenSlots))
-            return "open slots";
+            return false;
 
         if (config.RequiredRole != RoleFilter.AnyRole &&
             !listing.AcceptedJobs.Any(job => config.RequiredRole.Matches(job)))
-            return "role";
+            return false;
 
-        var haystack = listing.Duty + "\n" + listing.Description;
-        var excludes = SplitKeywords(config.ExcludeKeywords);
-        if (excludes.Any(keyword => haystack.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
-            return "excluded keyword";
-
-        var includes = SplitKeywords(config.IncludeKeywords);
-        if (includes.Length == 0)
-            return null;
-
-        var includeMatches = config.RequireAllIncludeKeywords
-            ? includes.All(keyword => haystack.Contains(keyword, StringComparison.OrdinalIgnoreCase))
-            : includes.Any(keyword => haystack.Contains(keyword, StringComparison.OrdinalIgnoreCase));
-
-        return includeMatches ? null : "include keyword";
+        return MatchesTextRules(listing.Duty, listing.Description, config);
     }
 
     private async Task<bool> DeleteLocalPfAlertAsync(
@@ -556,29 +464,18 @@ public sealed partial class Plugin
         return duty.Contains(dutyNameContains.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string BuildLocalPfMessage(
-        LocalPfListingSnapshot listing,
-        RoleFilter role,
-        bool isCurrentParty,
-        int livePartySize)
+    private static string BuildLocalPfMessage(LocalPfListingSnapshot listing, RoleFilter role)
     {
         var openSlots = Math.Max(0, listing.TotalSlots - listing.FilledSlots);
         var cleaned = CleanDescription(listing.Description);
         var roleText = role == RoleFilter.AnyRole
             ? "Any role"
             : $"{role.DisplayName()} - open (verified locally)";
-        var shownPartySize = isCurrentParty && livePartySize > 0
-            ? livePartySize
-            : listing.FilledSlots;
-        var currentPartyMarker = isCurrentParty
-            ? "**Current party:** Yes\n"
-            : string.Empty;
 
         return
             $"## {listing.Duty}\n" +
             "**Source:** Local FFXIV Party Finder\n" +
-            currentPartyMarker +
-            $"**Party:** {shownPartySize}/{listing.TotalSlots}\n" +
+            $"**Party:** {listing.FilledSlots}/{listing.TotalSlots}\n" +
             $"**Open slots:** {openSlots}\n" +
             $"**Role filter:** {roleText}\n" +
             $"**World:** {listing.World}\n" +
